@@ -8,6 +8,7 @@ from api import (
     charts_router,
     relationships_router,
     auth,
+    websocket_router,
 )
 import os
 import logging
@@ -54,6 +55,9 @@ app.include_router(birth_chart_router.router)
 app.include_router(aspects_router.router)
 app.include_router(charts_router.router)
 app.include_router(relationships_router.router)
+
+# WebSocket router for AI assistant chat
+app.include_router(websocket_router.router)
 
 @app.get("/")
 def read_root():
