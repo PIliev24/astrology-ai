@@ -21,7 +21,6 @@ router = APIRouter(prefix="/astrology/birth-chart", tags=["Birth Chart"])
 )
 async def get_birth_chart(
     request: BirthDataRequest,
-    current_user: dict = Depends(get_current_user)
 ):
     """
     Get comprehensive birth chart data including all planets and houses.

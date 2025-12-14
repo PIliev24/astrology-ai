@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "agents>=1.4.0",
+    "openai-agents>=0.2.0",
     "fastapi>=0.121.1",
     "kerykeion>=5.1.11",
     "openai>=2.7.1",

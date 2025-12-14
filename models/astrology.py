@@ -89,7 +89,6 @@ class UserResponse(BaseModel):
     
     id: str = Field(..., description="User ID")
     email: str = Field(..., description="User email address")
-    created_at: Optional[str] = Field(None, description="Account creation timestamp")
 
 
 class AuthResponse(BaseModel):

@@ -71,6 +71,20 @@ def create_astrological_subject(
         # If using city/nation without coordinates, we need online mode
         if lng is None or lat is None or tz_str is None:
             kwargs["online"] = True
+            # Check if geonames username is available when using online mode
+            username = geonames_username or os.getenv("GEONAMES_USERNAME")
+            if not username:
+                raise ValueError(
+                    "GeoNames username required for online lookup. "
+                    "Either provide 'geonames_username' in request, set GEONAMES_USERNAME environment variable, "
+                    "or provide coordinates directly (lng, lat, tz_str)."
+                )
+            kwargs["geonames_username"] = username
+        else:
+            # If coordinates are provided, use them instead of online lookup
+            kwargs["lng"] = lng
+            kwargs["lat"] = lat
+            kwargs["tz_str"] = tz_str
     elif lng is not None and lat is not None and tz_str:
         kwargs["lng"] = lng
         kwargs["lat"] = lat
@@ -82,10 +96,11 @@ def create_astrological_subject(
     if sidereal_mode:
         kwargs["sidereal_mode"] = sidereal_mode
     
-    # Use provided geonames_username or fall back to environment variable
-    username = geonames_username or os.getenv("GEONAMES_USERNAME")
-    if username:
-        kwargs["geonames_username"] = username
+    # Use provided geonames_username or fall back to environment variable (if not already set)
+    if "geonames_username" not in kwargs:
+        username = geonames_username or os.getenv("GEONAMES_USERNAME")
+        if username:
+            kwargs["geonames_username"] = username
     
     return AstrologicalSubject(**kwargs)
 
