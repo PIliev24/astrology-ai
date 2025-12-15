@@ -16,13 +16,13 @@ logger = logging.getLogger(__name__)
 
 # Initialize Supabase client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
-if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
     logger.warning("Supabase credentials not found in environment variables")
     supabase_client: Optional[Client] = None
 else:
-    supabase_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    supabase_client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     logger.info("Supabase client initialized successfully")
 
 # Security scheme for Bearer token

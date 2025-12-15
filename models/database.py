@@ -38,50 +38,6 @@ class UserBirthChartUpdate(BaseModel):
     chart_data: Optional[Dict[str, Any]] = Field(None, description="Calculated chart data")
 
 
-class UserAspect(BaseModel):
-    """Model for user aspect data stored in database"""
-    
-    id: UUID = Field(..., description="Aspect ID")
-    user_id: UUID = Field(..., description="User ID (foreign key to auth.users)")
-    birth_chart_id: UUID = Field(..., description="Birth chart ID (foreign key to user_birth_charts)")
-    aspect_type: Literal["natal", "synastry"] = Field(..., description="Type of aspect")
-    aspect_data: Dict[str, Any] = Field(..., description="Aspect calculations")
-    subject2_id: Optional[UUID] = Field(None, description="Second subject ID for synastry aspects")
-    created_at: datetime = Field(..., description="Creation timestamp")
-    
-    model_config = {"from_attributes": True}
-
-
-class UserAspectCreate(BaseModel):
-    """Model for creating new aspect data"""
-    
-    birth_chart_id: UUID = Field(..., description="Birth chart ID")
-    aspect_type: Literal["natal", "synastry"] = Field(..., description="Type of aspect")
-    aspect_data: Dict[str, Any] = Field(..., description="Aspect calculations")
-    subject2_id: Optional[UUID] = Field(None, description="Second subject ID for synastry aspects")
-
-
-class UserRelationship(BaseModel):
-    """Model for user relationship data stored in database"""
-    
-    id: UUID = Field(..., description="Relationship ID")
-    user_id: UUID = Field(..., description="User ID (foreign key to auth.users)")
-    subject1_id: UUID = Field(..., description="First subject ID (foreign key to user_birth_charts)")
-    subject2_id: UUID = Field(..., description="Second subject ID (foreign key to user_birth_charts)")
-    compatibility_score: Optional[float] = Field(None, description="Compatibility score (0-100)")
-    relationship_data: Dict[str, Any] = Field(..., description="Full relationship analysis data")
-    created_at: datetime = Field(..., description="Creation timestamp")
-    
-    model_config = {"from_attributes": True}
-
-
-class UserRelationshipCreate(BaseModel):
-    """Model for creating new relationship data"""
-    
-    subject1_id: UUID = Field(..., description="First subject ID")
-    subject2_id: UUID = Field(..., description="Second subject ID")
-    compatibility_score: Optional[float] = Field(None, description="Compatibility score (0-100)")
-    relationship_data: Dict[str, Any] = Field(..., description="Full relationship analysis data")
 
 
 class ChatConversation(BaseModel):

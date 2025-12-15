@@ -3,71 +3,48 @@ Pydantic models for astrology API requests and responses
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Literal
+from typing import Optional, List, Dict, Any
 from datetime import datetime
+from uuid import UUID
 
 
-class BirthDataRequest(BaseModel):
-    """Request model for creating an astrological subject"""
+class BirthChartCreateRequest(BaseModel):
+    """Request model for creating a birth chart"""
     name: str = Field(..., description="Person's name")
-    year: int = Field(..., ge=1900, le=2100, description="Birth year")
-    month: int = Field(..., ge=1, le=12, description="Birth month")
-    day: int = Field(..., ge=1, le=31, description="Birth day")
-    hour: int = Field(..., ge=0, le=23, description="Birth hour")
-    minute: int = Field(..., ge=0, le=59, description="Birth minute")
-    
-    # Location - either city/nation or coordinates
-    city: Optional[str] = Field(None, description="City name")
-    nation: Optional[str] = Field(None, description="Nation code (e.g., US, GB)")
-    lng: Optional[float] = Field(None, description="Longitude")
-    lat: Optional[float] = Field(None, description="Latitude")
-    tz_str: Optional[str] = Field(None, description="Timezone string (e.g., Europe/London)")
-    
-    # Advanced options
-    zodiac_type: Literal["Tropic", "Sidereal"] = Field("Tropic", description="Zodiac type")
-    sidereal_mode: Optional[str] = Field(None, description="Sidereal mode (e.g., LAHIRI)")
-    houses_system: str = Field("P", description="House system (P=Placidus, K=Koch, etc.)")
-    perspective_type: Literal["Apparent Geocentric", "Heliocentric", "Topocentric"] = Field(
-        "Apparent Geocentric", description="Astrological perspective"
-    )
-    online: bool = Field(False, description="Fetch geolocation data online")
-    geonames_username: Optional[str] = Field(None, description="GeoNames username")
-
-class TwoSubjectsRequest(BaseModel):
-    """Request model for operations requiring two subjects"""
-    subject1: BirthDataRequest
-    subject2: BirthDataRequest
+    birth_datetime: str = Field(..., description="Birth date and time in format 'dd-mmm-yyyy hh:mm' (e.g., '15-Jun-1990 14:30')")
+    city: str = Field(..., description="City name")
+    country: str = Field(..., description="Country code (e.g., 'US', 'GB') or country name")
 
 
-class ChartGenerationRequest(BaseModel):
-    """Request model for chart generation"""
-    subject: BirthDataRequest
-    output_directory: Optional[str] = Field(None, description="Custom output directory")
-    theme: Literal["classic", "dark", "dark_high_contrast", "light"] = Field(
-        "classic", description="Chart theme"
-    )
-    chart_language: str = Field("EN", description="Chart language (EN, ES, IT, etc.)")
-    active_points: Optional[List[str]] = Field(
-        None, description="List of active points to include in chart"
-    )
+class BirthChartResponse(BaseModel):
+    """Response model for birth chart data"""
+    id: UUID = Field(..., description="Birth chart ID")
+    name: str = Field(..., description="Person's name")
+    birth_data: Dict[str, Any] = Field(..., description="Full birth data (year, month, day, hour, minute, location)")
+    chart_data: Dict[str, Any] = Field(..., description="Calculated chart data from RapidAPI")
+    created_at: datetime = Field(..., description="Creation timestamp")
 
 
-class SynastryChartRequest(BaseModel):
-    """Request model for synastry chart generation"""
-    subject1: BirthDataRequest
-    subject2: BirthDataRequest
-    output_directory: Optional[str] = Field(None, description="Custom output directory")
-    theme: str = Field("classic", description="Chart theme")
-    chart_language: str = Field("EN", description="Chart language")
+class BirthChartListItem(BaseModel):
+    """Response model for birth chart list items (without chart_data)"""
+    id: UUID = Field(..., description="Birth chart ID")
+    name: str = Field(..., description="Person's name")
+    birth_data: Dict[str, Any] = Field(..., description="Full birth data (year, month, day, hour, minute, location)")
 
 
-class TransitChartRequest(BaseModel):
-    """Request model for transit chart generation"""
-    natal_subject: BirthDataRequest
-    transit_subject: BirthDataRequest
-    output_directory: Optional[str] = Field(None, description="Custom output directory")
-    theme: str = Field("classic", description="Chart theme")
-    chart_language: str = Field("EN", description="Chart language")
+class CompatibilityScoreRequest(BaseModel):
+    """Request model for compatibility score calculation (optional, for direct API calls)"""
+    chart_id_1: UUID = Field(..., description="First chart ID")
+    chart_id_2: UUID = Field(..., description="Second chart ID")
+
+
+class CompatibilityScoreResponse(BaseModel):
+    """Response model for compatibility score"""
+    score: int = Field(..., description="Compatibility score (0-100)")
+    score_description: str = Field(..., description="Description of the score")
+    is_destiny_sign: bool = Field(..., description="Whether it's a destiny sign")
+    aspects: List[Dict[str, Any]] = Field(..., description="List of aspects between the two charts")
+    chart_data: Dict[str, Any] = Field(..., description="Additional chart data")
 
 
 # Authentication Models

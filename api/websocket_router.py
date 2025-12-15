@@ -9,19 +9,18 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, status, Query
-from supabase import Client
 
 from agents import Runner
 from openai.types.responses import ResponseTextDeltaEvent
 
-from ai_agents.orchestrator_agent import orchestrator, OrchestratorContext
-from middleware.auth import supabase_client
+from ai_agents.astrology_specialist_agent import astrology_specialist, AgentContext
 from services.database import (
     save_conversation,
     get_conversation_by_id,
     save_message,
-    get_conversation_history,
 )
+from supabase import create_client
+import os
 from models.ai import (
     ChatMessageRequest,
     ChatMessageResponse,
@@ -50,7 +49,10 @@ async def authenticate_websocket(websocket: WebSocket, token: Optional[str] = No
     Raises:
         HTTPException: If authentication fails
     """
-    if not supabase_client:
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
+    
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -65,6 +67,7 @@ async def authenticate_websocket(websocket: WebSocket, token: Optional[str] = No
         )
     
     try:
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
         user_response = supabase_client.auth.get_user(token)
         
         if not user_response or not user_response.user:
@@ -134,13 +137,7 @@ async def websocket_chat(
             message="Connected to astrology assistant",
             user_id=user_id,
         )
-        await websocket.send_json(connection_response.model_dump())
-        
-        # Create agent context
-        context = OrchestratorContext(
-            user_id=user_id,
-            supabase=supabase_client,
-        )
+        await websocket.send_json(connection_response.model_dump(mode='json'))
         
         # Current conversation ID (may be None for new conversations)
         current_conversation_id: Optional[UUID] = None
@@ -159,7 +156,7 @@ async def websocket_chat(
                         type="error",
                         error=f"Invalid message format: {str(e)}",
                     )
-                    await websocket.send_json(error_response.model_dump())
+                    await websocket.send_json(error_response.model_dump(mode='json'))
                     continue
                 
                 # Save user message to database
@@ -168,7 +165,6 @@ async def websocket_chat(
                         # Try to load existing conversation
                         try:
                             conversation = get_conversation_by_id(
-                                supabase_client,
                                 user_id,
                                 str(message_request.conversation_id),
                             )
@@ -176,7 +172,6 @@ async def websocket_chat(
                         except HTTPException:
                             # Conversation not found, create new one
                             new_conversation = save_conversation(
-                                supabase_client,
                                 user_id,
                                 ChatConversationCreate(title=None),
                             )
@@ -184,7 +179,6 @@ async def websocket_chat(
                     else:
                         # Create new conversation
                         new_conversation = save_conversation(
-                            supabase_client,
                             user_id,
                             ChatConversationCreate(title=None),
                         )
@@ -197,49 +191,31 @@ async def websocket_chat(
                             content="",
                             conversation_id=current_conversation_id,
                         )
-                        await websocket.send_json(conversation_response.model_dump())
+                        await websocket.send_json(conversation_response.model_dump(mode='json'))
                 
-                # Save user message
-                user_message = save_message(
-                    supabase_client,
-                    ChatMessageCreate(
-                        conversation_id=current_conversation_id,
-                        role="user",
-                        content=message_request.content,
-                        metadata={
-                            "chart_references": message_request.chart_references or [],
-                        } if message_request.chart_references else None,
-                    ),
-                )
-                
-                # Get conversation history for context (last 10 messages)
-                history = get_conversation_history(
-                    supabase_client,
-                    str(current_conversation_id),
-                    limit=10,
-                )
-                
-                # Build conversation history for agent
-                # The agent will use this context automatically
-                conversation_context = ""
-                for msg in history[-5:]:  # Last 5 messages for context
-                    conversation_context += f"{msg.role}: {msg.content}\n"
-                
-                # Prepare user input with context
+                # Prepare user input - append chart_references info if present
+                # Note: Conversation history is handled automatically by the agents library
+                # We don't manually pass it to reduce token usage
                 user_input = message_request.content
-                if conversation_context:
-                    # Add context to help agent understand conversation flow
-                    user_input = f"[Previous conversation context]\n{conversation_context}\n[Current question]\n{user_input}"
+                if message_request.chart_references and len(message_request.chart_references) > 0:
+                    chart_refs_str = ", ".join(message_request.chart_references)
+                    if len(message_request.chart_references) == 1:
+                        user_input += f"\n\n[Note: Chart ID {chart_refs_str} is referenced in this conversation. Use get_user_birth_chart with chart_id='{chart_refs_str}' or chart_ids=['{chart_refs_str}'] to fetch it.]"
+                    else:
+                        user_input += f"\n\n[Note: Chart IDs {chart_refs_str} are referenced. Use get_user_birth_chart with chart_ids={message_request.chart_references} to fetch them.]"
                 
                 # Track tool calls for metadata
                 tool_calls_metadata: list[ToolCallMetadata] = []
                 
-                # Run agent with streaming
+                # Create MINIMAL agent context - only user_id to reduce token usage
+                agent_context = AgentContext(user_id=user_id)
+                
+                # Run agent with streaming and context
                 try:
                     result = Runner.run_streamed(
-                        orchestrator,
+                        astrology_specialist,
                         input=user_input,
-                        context=context,
+                        context=agent_context,
                     )
                     
                     # Stream response
@@ -258,10 +234,25 @@ async def websocket_chat(
                         # Track tool calls
                         elif event.type == "run_item_stream_event":
                             if event.item.type == "tool_call_item":
+                                # Safely extract tool name - check multiple possible attribute names
+                                tool_name = "unknown"
+                                if hasattr(event.item, 'tool_name'):
+                                    tool_name = event.item.tool_name
+                                elif hasattr(event.item, 'name'):
+                                    tool_name = event.item.name
+                                elif hasattr(event.item, 'function_name'):
+                                    tool_name = event.item.function_name
+                                
+                                tool_input = None
+                                if hasattr(event.item, 'input'):
+                                    tool_input = event.item.input
+                                elif hasattr(event.item, 'arguments'):
+                                    tool_input = event.item.arguments
+                                
                                 tool_calls_metadata.append(
                                     ToolCallMetadata(
-                                        tool_name=event.item.tool_name or "unknown",
-                                        tool_input=event.item.input if hasattr(event.item, 'input') else None,
+                                        tool_name=tool_name or "unknown",
+                                        tool_input=tool_input,
                                         tool_output=None,  # Will be updated when tool completes
                                         success=True,
                                     )
@@ -269,14 +260,19 @@ async def websocket_chat(
                             elif event.item.type == "tool_call_output_item":
                                 # Update last tool call with output
                                 if tool_calls_metadata:
-                                    tool_calls_metadata[-1].tool_output = str(event.item.output)[:500]  # Truncate long outputs
+                                    output = None
+                                    if hasattr(event.item, 'output'):
+                                        output = event.item.output
+                                    elif hasattr(event.item, 'result'):
+                                        output = event.item.result
+                                    if output is not None:
+                                        tool_calls_metadata[-1].tool_output = str(output)[:500]  # Truncate long outputs
                     
                     # Get final output
                     final_output = result.final_output or assistant_response_content
                     
                     # Save assistant message to database
-                    assistant_message = save_message(
-                        supabase_client,
+                    save_message(
                         ChatMessageCreate(
                             conversation_id=current_conversation_id,
                             role="assistant",
@@ -303,7 +299,7 @@ async def websocket_chat(
                         tool_calls=tool_calls_metadata if tool_calls_metadata else None,
                         chart_references=message_request.chart_references,
                     )
-                    await websocket.send_json(response.model_dump())
+                    await websocket.send_json(response.model_dump(mode='json'))
                 
                 except Exception as e:
                     logger.error(f"Error running agent: {str(e)}")
@@ -311,7 +307,7 @@ async def websocket_chat(
                         type="error",
                         error=f"Failed to process message: {str(e)}",
                     )
-                    await websocket.send_json(error_response.model_dump())
+                    await websocket.send_json(error_response.model_dump(mode='json'))
             
             except WebSocketDisconnect:
                 logger.info(f"WebSocket disconnected for user {user_id}")

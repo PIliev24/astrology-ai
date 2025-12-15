@@ -3,22 +3,17 @@ Database service layer for Supabase operations
 Handles all CRUD operations for user birth charts, aspects, relationships, and conversations
 """
 
+import os
 from typing import Optional, List
-from uuid import UUID
-from datetime import datetime
 import logging
 
-from supabase import Client
+from supabase import create_client, Client
 from fastapi import HTTPException, status
 
 from models.database import (
     UserBirthChart,
     UserBirthChartCreate,
     UserBirthChartUpdate,
-    UserAspect,
-    UserAspectCreate,
-    UserRelationship,
-    UserRelationshipCreate,
     ChatConversation,
     ChatConversationCreate,
     ChatConversationUpdate,
@@ -29,13 +24,45 @@ from models.database import (
 
 logger = logging.getLogger(__name__)
 
+# Supabase configuration
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
+
+
+def _create_supabase_client() -> Client:
+    """
+    Create a Supabase client instance using service role key.
+    Service role key bypasses RLS, which is appropriate for backend services.
+    User authorization is enforced at the application level via user_id checks.
+    
+    Returns:
+        Client: Supabase client instance
+    
+    Raises:
+        HTTPException: If Supabase credentials are not configured
+    """
+    if not SUPABASE_URL:
+        logger.error("SUPABASE_URL environment variable is not set")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Supabase URL not configured. Please set SUPABASE_URL environment variable."
+        )
+    
+    if not SUPABASE_SECRET_KEY:
+        logger.error("SUPABASE_SECRET_KEY environment variable is not set")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Supabase service role key not configured. Please set SUPABASE_SECRET_KEY environment variable. You can find it in your Supabase dashboard under Project Settings > API > service_role key (secret)."
+        )
+    
+    return create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+
 
 # ============================================================================
 # Birth Chart Operations
 # ============================================================================
 
 def save_birth_chart(
-    supabase: Client,
     user_id: str,
     chart_data: UserBirthChartCreate,
 ) -> UserBirthChart:
@@ -43,7 +70,6 @@ def save_birth_chart(
     Save a birth chart to the database.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         chart_data: Birth chart data to save
     
@@ -54,6 +80,8 @@ def save_birth_chart(
         HTTPException: If database operation fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         data = {
             "user_id": user_id,
             "name": chart_data.name,
@@ -82,33 +110,46 @@ def save_birth_chart(
 
 
 def get_user_birth_charts(
-    supabase: Client,
     user_id: str,
     limit: Optional[int] = None,
 ) -> List[UserBirthChart]:
     """
-    Get all birth charts for a user.
+    Get all birth charts for a user (returns only id, name, and birth_data for list view).
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         limit: Optional limit on number of results
     
     Returns:
-        List[UserBirthChart]: List of user's birth charts
+        List[UserBirthChart]: List of user's birth charts (with only id, name, birth_data)
     
     Raises:
         HTTPException: If database operation fails
     """
     try:
-        query = supabase.table("user_birth_charts").select("*").eq("user_id", user_id).order("created_at", desc=True)
+        supabase = _create_supabase_client()
+        
+        # Only select id, name, and birth_data to avoid loading large chart_data (SVG)
+        query = supabase.table("user_birth_charts").select("id,name,birth_data,created_at,updated_at").eq("user_id", user_id).order("created_at", desc=True)
         
         if limit:
             query = query.limit(limit)
         
         response = query.execute()
         
-        return [UserBirthChart(**item) for item in response.data]
+        # Create UserBirthChart objects with chart_data as empty dict (since we didn't select it)
+        return [
+            UserBirthChart(
+                id=item["id"],
+                user_id=user_id,
+                name=item["name"],
+                birth_data=item["birth_data"],
+                chart_data={},  # Empty since we didn't select it
+                created_at=item.get("created_at"),
+                updated_at=item.get("updated_at"),
+            )
+            for item in response.data
+        ]
     
     except Exception as e:
         logger.error(f"Error fetching user birth charts: {str(e)}")
@@ -119,7 +160,6 @@ def get_user_birth_charts(
 
 
 def get_birth_chart_by_id(
-    supabase: Client,
     user_id: str,
     chart_id: str,
 ) -> UserBirthChart:
@@ -127,7 +167,6 @@ def get_birth_chart_by_id(
     Get a specific birth chart by ID.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         chart_id: Birth chart ID (UUID string)
     
@@ -138,6 +177,8 @@ def get_birth_chart_by_id(
         HTTPException: If chart not found or database operation fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         response = (
             supabase.table("user_birth_charts")
             .select("*")
@@ -166,7 +207,6 @@ def get_birth_chart_by_id(
 
 
 def update_birth_chart(
-    supabase: Client,
     user_id: str,
     chart_id: str,
     update_data: UserBirthChartUpdate,
@@ -175,7 +215,6 @@ def update_birth_chart(
     Update an existing birth chart.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         chart_id: Birth chart ID (UUID string)
         update_data: Fields to update
@@ -187,6 +226,8 @@ def update_birth_chart(
         HTTPException: If chart not found or update fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         # Build update dict from non-None fields
         update_dict = {}
         if update_data.name is not None:
@@ -198,7 +239,7 @@ def update_birth_chart(
         
         if not update_dict:
             # No fields to update, return existing chart
-            return get_birth_chart_by_id(supabase, user_id, chart_id)
+            return get_birth_chart_by_id(user_id, chart_id)
         
         response = (
             supabase.table("user_birth_charts")
@@ -227,7 +268,6 @@ def update_birth_chart(
 
 
 def delete_birth_chart(
-    supabase: Client,
     user_id: str,
     chart_id: str,
 ) -> None:
@@ -235,7 +275,6 @@ def delete_birth_chart(
     Delete a birth chart.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         chart_id: Birth chart ID (UUID string)
     
@@ -243,6 +282,8 @@ def delete_birth_chart(
         HTTPException: If deletion fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         response = (
             supabase.table("user_birth_charts")
             .delete()
@@ -263,202 +304,10 @@ def delete_birth_chart(
 
 
 # ============================================================================
-# Aspect Operations
-# ============================================================================
-
-def save_aspects(
-    supabase: Client,
-    user_id: str,
-    aspect_data: UserAspectCreate,
-) -> UserAspect:
-    """
-    Save aspect data to the database.
-    
-    Args:
-        supabase: Supabase client instance
-        user_id: User ID (UUID string)
-        aspect_data: Aspect data to save
-    
-    Returns:
-        UserAspect: Saved aspect with generated ID
-    
-    Raises:
-        HTTPException: If database operation fails
-    """
-    try:
-        data = {
-            "user_id": user_id,
-            "birth_chart_id": str(aspect_data.birth_chart_id),
-            "aspect_type": aspect_data.aspect_type,
-            "aspect_data": aspect_data.aspect_data,
-        }
-        
-        if aspect_data.subject2_id:
-            data["subject2_id"] = str(aspect_data.subject2_id)
-        
-        response = supabase.table("user_aspects").insert(data).execute()
-        
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to save aspects"
-            )
-        
-        return UserAspect(**response.data[0])
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error saving aspects: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save aspects: {str(e)}"
-        )
-
-
-def get_user_aspects(
-    supabase: Client,
-    user_id: str,
-    chart_id: Optional[str] = None,
-    aspect_type: Optional[str] = None,
-) -> List[UserAspect]:
-    """
-    Get aspects for a user, optionally filtered by chart or type.
-    
-    Args:
-        supabase: Supabase client instance
-        user_id: User ID (UUID string)
-        chart_id: Optional birth chart ID to filter by
-        aspect_type: Optional aspect type filter ('natal' or 'synastry')
-    
-    Returns:
-        List[UserAspect]: List of aspects
-    
-    Raises:
-        HTTPException: If database operation fails
-    """
-    try:
-        query = supabase.table("user_aspects").select("*").eq("user_id", user_id)
-        
-        if chart_id:
-            query = query.eq("birth_chart_id", chart_id)
-        
-        if aspect_type:
-            query = query.eq("aspect_type", aspect_type)
-        
-        query = query.order("created_at", desc=True)
-        
-        response = query.execute()
-        
-        return [UserAspect(**item) for item in response.data]
-    
-    except Exception as e:
-        logger.error(f"Error fetching aspects: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch aspects: {str(e)}"
-        )
-
-
-# ============================================================================
-# Relationship Operations
-# ============================================================================
-
-def save_relationship(
-    supabase: Client,
-    user_id: str,
-    relationship_data: UserRelationshipCreate,
-) -> UserRelationship:
-    """
-    Save relationship data to the database.
-    
-    Args:
-        supabase: Supabase client instance
-        user_id: User ID (UUID string)
-        relationship_data: Relationship data to save
-    
-    Returns:
-        UserRelationship: Saved relationship with generated ID
-    
-    Raises:
-        HTTPException: If database operation fails
-    """
-    try:
-        data = {
-            "user_id": user_id,
-            "subject1_id": str(relationship_data.subject1_id),
-            "subject2_id": str(relationship_data.subject2_id),
-            "relationship_data": relationship_data.relationship_data,
-        }
-        
-        if relationship_data.compatibility_score is not None:
-            data["compatibility_score"] = relationship_data.compatibility_score
-        
-        response = supabase.table("user_relationships").insert(data).execute()
-        
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to save relationship"
-            )
-        
-        return UserRelationship(**response.data[0])
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error saving relationship: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save relationship: {str(e)}"
-        )
-
-
-def get_user_relationships(
-    supabase: Client,
-    user_id: str,
-    chart_id: Optional[str] = None,
-) -> List[UserRelationship]:
-    """
-    Get relationships for a user, optionally filtered by chart.
-    
-    Args:
-        supabase: Supabase client instance
-        user_id: User ID (UUID string)
-        chart_id: Optional chart ID to filter by (returns relationships where chart is subject1 or subject2)
-    
-    Returns:
-        List[UserRelationship]: List of relationships
-    
-    Raises:
-        HTTPException: If database operation fails
-    """
-    try:
-        query = supabase.table("user_relationships").select("*").eq("user_id", user_id)
-        
-        if chart_id:
-            query = query.or_(f"subject1_id.eq.{chart_id},subject2_id.eq.{chart_id}")
-        
-        query = query.order("created_at", desc=True)
-        
-        response = query.execute()
-        
-        return [UserRelationship(**item) for item in response.data]
-    
-    except Exception as e:
-        logger.error(f"Error fetching relationships: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch relationships: {str(e)}"
-        )
-
-
-# ============================================================================
 # Conversation Operations
 # ============================================================================
 
 def save_conversation(
-    supabase: Client,
     user_id: str,
     conversation_data: ChatConversationCreate,
 ) -> ChatConversation:
@@ -466,7 +315,6 @@ def save_conversation(
     Create a new conversation.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         conversation_data: Conversation data to create
     
@@ -477,6 +325,8 @@ def save_conversation(
         HTTPException: If database operation fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         data = {
             "user_id": user_id,
         }
@@ -505,7 +355,6 @@ def save_conversation(
 
 
 def get_user_conversations(
-    supabase: Client,
     user_id: str,
     limit: Optional[int] = None,
 ) -> List[ChatConversation]:
@@ -513,7 +362,6 @@ def get_user_conversations(
     Get all conversations for a user.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         limit: Optional limit on number of results
     
@@ -524,6 +372,8 @@ def get_user_conversations(
         HTTPException: If database operation fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         query = supabase.table("chat_conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True)
         
         if limit:
@@ -542,7 +392,6 @@ def get_user_conversations(
 
 
 def get_conversation_by_id(
-    supabase: Client,
     user_id: str,
     conversation_id: str,
 ) -> ChatConversation:
@@ -550,7 +399,6 @@ def get_conversation_by_id(
     Get a specific conversation by ID.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         conversation_id: Conversation ID (UUID string)
     
@@ -561,6 +409,8 @@ def get_conversation_by_id(
         HTTPException: If conversation not found or database operation fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         response = (
             supabase.table("chat_conversations")
             .select("*")
@@ -589,7 +439,6 @@ def get_conversation_by_id(
 
 
 def update_conversation(
-    supabase: Client,
     user_id: str,
     conversation_id: str,
     update_data: ChatConversationUpdate,
@@ -598,7 +447,6 @@ def update_conversation(
     Update conversation metadata.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         conversation_id: Conversation ID (UUID string)
         update_data: Fields to update
@@ -610,12 +458,14 @@ def update_conversation(
         HTTPException: If conversation not found or update fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         update_dict = {}
         if update_data.title is not None:
             update_dict["title"] = update_data.title
         
         if not update_dict:
-            return get_conversation_by_id(supabase, user_id, conversation_id)
+            return get_conversation_by_id(user_id, conversation_id)
         
         response = (
             supabase.table("chat_conversations")
@@ -644,7 +494,6 @@ def update_conversation(
 
 
 def delete_conversation(
-    supabase: Client,
     user_id: str,
     conversation_id: str,
 ) -> None:
@@ -652,7 +501,6 @@ def delete_conversation(
     Delete a conversation and all its messages.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         conversation_id: Conversation ID (UUID string)
     
@@ -660,6 +508,8 @@ def delete_conversation(
         HTTPException: If deletion fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         # Messages will be deleted automatically via CASCADE
         response = (
             supabase.table("chat_conversations")
@@ -684,14 +534,12 @@ def delete_conversation(
 # ============================================================================
 
 def save_message(
-    supabase: Client,
     message_data: ChatMessageCreate,
 ) -> ChatMessage:
     """
     Save a chat message to the database.
     
     Args:
-        supabase: Supabase client instance
         message_data: Message data to save
     
     Returns:
@@ -701,6 +549,8 @@ def save_message(
         HTTPException: If database operation fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         data = {
             "conversation_id": str(message_data.conversation_id),
             "role": message_data.role,
@@ -731,7 +581,6 @@ def save_message(
 
 
 def get_conversation_history(
-    supabase: Client,
     conversation_id: str,
     limit: Optional[int] = None,
 ) -> List[ChatMessage]:
@@ -739,7 +588,6 @@ def get_conversation_history(
     Get message history for a conversation.
     
     Args:
-        supabase: Supabase client instance
         conversation_id: Conversation ID (UUID string)
         limit: Optional limit on number of messages
     
@@ -750,6 +598,8 @@ def get_conversation_history(
         HTTPException: If database operation fails
     """
     try:
+        supabase = _create_supabase_client()
+        
         query = (
             supabase.table("chat_messages")
             .select("*")
@@ -773,7 +623,6 @@ def get_conversation_history(
 
 
 def get_conversation_with_messages(
-    supabase: Client,
     user_id: str,
     conversation_id: str,
     message_limit: Optional[int] = None,
@@ -782,7 +631,6 @@ def get_conversation_with_messages(
     Get a conversation with its messages.
     
     Args:
-        supabase: Supabase client instance
         user_id: User ID (UUID string)
         conversation_id: Conversation ID (UUID string)
         message_limit: Optional limit on number of messages
@@ -794,8 +642,8 @@ def get_conversation_with_messages(
         HTTPException: If conversation not found or database operation fails
     """
     try:
-        conversation = get_conversation_by_id(supabase, user_id, conversation_id)
-        messages = get_conversation_history(supabase, conversation_id, message_limit)
+        conversation = get_conversation_by_id(user_id, conversation_id)
+        messages = get_conversation_history(conversation_id, message_limit)
         
         return ConversationWithMessages(
             conversation=conversation,
