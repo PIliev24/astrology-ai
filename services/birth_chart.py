@@ -1,33 +1,38 @@
 """
-Birth Chart & Subject Creation Services
+Birth Chart Service
+Uses RapidAPI Hub - Astrologer for birth chart calculations
 """
 
 import os
-from typing import Optional, Literal
-from kerykeion import AstrologicalSubject
+import logging
+import httpx
+from typing import Dict, Any, Optional
+from fastapi import HTTPException, status
+
+logger = logging.getLogger(__name__)
+
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+RAPIDAPI_HOST = "astrologer.p.rapidapi.com"
+BIRTH_CHART_ENDPOINT = "https://astrologer.p.rapidapi.com/api/v5/chart/birth-chart"
 
 
-def create_astrological_subject(
+async def generate_birth_chart(
     name: str,
     year: int,
     month: int,
     day: int,
     hour: int,
     minute: int,
-    city: Optional[str] = None,
-    nation: Optional[str] = None,
-    lng: Optional[float] = None,
-    lat: Optional[float] = None,
-    tz_str: Optional[str] = None,
-    zodiac_type: Literal["Tropic", "Sidereal"] = "Tropic",
-    sidereal_mode: Optional[str] = None,
-    houses_system: str = "P",  # Placidus by default
-    perspective_type: Literal["Apparent Geocentric", "Heliocentric", "Topocentric"] = "Apparent Geocentric",
-    online: bool = False,
-    geonames_username: Optional[str] = None,
-) -> AstrologicalSubject:
+    city: str,
+    nation: str,
+    longitude: float,
+    latitude: float,
+    timezone: str,
+    zodiac_type: str = "Tropical",
+    houses_system_identifier: str = "P",
+) -> Dict[str, Any]:
     """
-    Create an astrological subject with birth data.
+    Generate birth chart data using RapidAPI Hub - Astrologer.
     
     Args:
         name: Person's name
@@ -36,107 +41,96 @@ def create_astrological_subject(
         day: Birth day
         hour: Birth hour (0-23)
         minute: Birth minute (0-59)
-        city: City name (used with online=True)
+        city: City name
         nation: Nation code (e.g., "US", "GB")
-        lng: Longitude (if not using city/nation)
-        lat: Latitude (if not using city/nation)
-        tz_str: Timezone string (e.g., "Europe/London")
-        zodiac_type: "Tropic" or "Sidereal"
-        sidereal_mode: Sidereal mode if using Sidereal zodiac (e.g., "LAHIRI")
-        houses_system: House system code (P=Placidus, K=Koch, etc.)
-        perspective_type: Astrological perspective
-        online: Whether to fetch geolocation data online
-        geonames_username: Username for GeoNames API
+        longitude: Longitude
+        latitude: Latitude
+        timezone: Timezone string (IANA format, e.g., "America/New_York")
+        zodiac_type: Zodiac type ("Tropical" or "Sidereal")
+        houses_system_identifier: House system code (default "P" for Placidus)
     
     Returns:
-        AstrologicalSubject instance
+        Dictionary containing birth chart response from RapidAPI with:
+        - status: Response status
+        - chart_data: Chart data (planets, aspects, houses, etc.)
+        - chart: SVG string of the birth chart
+    
+    Raises:
+        HTTPException: If API call fails or returns error
     """
-    kwargs = {
-        "name": name,
-        "year": year,
-        "month": month,
-        "day": day,
-        "hour": hour,
-        "minute": minute,
-        "zodiac_type": zodiac_type,
-        "houses_system_identifier": houses_system,
-        "perspective_type": perspective_type,
-        "online": online,
-    }
+    if not RAPIDAPI_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="RapidAPI key not configured"
+        )
     
-    # Add location data
-    if city and nation:
-        kwargs["city"] = city
-        kwargs["nation"] = nation
-        # If using city/nation without coordinates, we need online mode
-        if lng is None or lat is None or tz_str is None:
-            kwargs["online"] = True
-    elif lng is not None and lat is not None and tz_str:
-        kwargs["lng"] = lng
-        kwargs["lat"] = lat
-        kwargs["tz_str"] = tz_str
-    else:
-        raise ValueError("Must provide either (city, nation) or (lng, lat, tz_str)")
-    
-    # Add optional parameters
-    if sidereal_mode:
-        kwargs["sidereal_mode"] = sidereal_mode
-    
-    # Use provided geonames_username or fall back to environment variable
-    username = geonames_username or os.getenv("GEONAMES_USERNAME")
-    if username:
-        kwargs["geonames_username"] = username
-    
-    return AstrologicalSubject(**kwargs)
-
-
-def get_birth_chart_data(subject: AstrologicalSubject) -> dict:
-    """
-    Extract comprehensive birth chart data from an astrological subject.
-    
-    Args:
-        subject: AstrologicalSubject instance
-    
-    Returns:
-        Dictionary with planets, houses, and other chart data
-    """
-    return {
-        "name": subject.name,
-        "birth_data": {
-            "year": subject.year,
-            "month": subject.month,
-            "day": subject.day,
-            "hour": subject.hour,
-            "minute": subject.minute,
-            "city": subject.city,
-            "nation": subject.nation,
-            "longitude": subject.lng,
-            "latitude": subject.lat,
-            "timezone": subject.tz_str,
+    payload = {
+        "subject": {
+            "name": name,
+            "year": year,
+            "month": month,
+            "day": day,
+            "hour": hour,
+            "minute": minute,
+            "city": city,
+            "nation": nation,
+            "longitude": longitude,
+            "latitude": latitude,
+            "timezone": timezone,
+            "zodiac_type": zodiac_type,
+            "houses_system_identifier": houses_system_identifier,
         },
-        "sun": subject.sun,
-        "moon": subject.moon,
-        "mercury": subject.mercury,
-        "venus": subject.venus,
-        "mars": subject.mars,
-        "jupiter": subject.jupiter,
-        "saturn": subject.saturn,
-        "uranus": subject.uranus,
-        "neptune": subject.neptune,
-        "pluto": subject.pluto,
-        "mean_node": subject.mean_node,
-        "true_node": subject.true_node,
-        "chiron": subject.chiron,
-        "first_house": subject.first_house,
-        "second_house": subject.second_house,
-        "third_house": subject.third_house,
-        "fourth_house": subject.fourth_house,
-        "fifth_house": subject.fifth_house,
-        "sixth_house": subject.sixth_house,
-        "seventh_house": subject.seventh_house,
-        "eighth_house": subject.eighth_house,
-        "ninth_house": subject.ninth_house,
-        "tenth_house": subject.tenth_house,
-        "eleventh_house": subject.eleventh_house,
-        "twelfth_house": subject.twelfth_house,
+        "theme": "classic",
+        "language": "EN",
+        "split_chart": False,
+        "transparent_background": False,
+        "show_house_position_comparison": True,
     }
+    
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                BIRTH_CHART_ENDPOINT,
+                json=payload,
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"RapidAPI error: {response.status_code} - {response.text}")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"RapidAPI birth chart service error: {response.status_code}"
+                )
+            
+            data = response.json()
+            
+            # Validate response structure
+            if "status" in data and data.get("status") != "OK":
+                logger.error(f"RapidAPI returned error status: {data}")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="RapidAPI birth chart service returned error"
+                )
+            
+            return data
+    
+    except httpx.TimeoutException:
+        logger.error("RapidAPI birth chart request timed out")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Birth chart service request timed out"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error calling RapidAPI birth chart: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate birth chart: {str(e)}"
+        )

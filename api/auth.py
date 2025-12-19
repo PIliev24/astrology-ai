@@ -180,7 +180,7 @@ async def logout(
 
 @router.get(
     "/me",
-    response_model=AuthResponse,
+    response_model=UserResponse,
     summary="Get current user",
     description="Retrieve information about the currently authenticated user"
 )
@@ -192,17 +192,14 @@ async def get_user_info(
     
     Args:
         current_user: Current authenticated user from JWT token
-        
+    
     Returns:
-        AuthResponse: Contains current user data
+        UserResponse: Current user data
     """
-    return AuthResponse(
-        success=True,
-        user=UserResponse(
-            id=current_user["id"],
-            email=current_user["email"],
-            created_at=current_user.get("created_at")
-        )
+    return UserResponse(
+        id=current_user["id"],
+        email=current_user["email"],
+        created_at=str(current_user.get("created_at")) if current_user.get("created_at") else None
     )
 
 

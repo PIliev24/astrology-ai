@@ -35,7 +35,7 @@ Required environment variables:
 ```env
 # Supabase Configuration (Required)
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SECRET_KEY=your_supabase_service_role_key
 
 # GeoNames for location lookup (Optional)
 GEONAMES_USERNAME=your_geonames_username
@@ -48,8 +48,12 @@ FRONTEND_URL=https://your-frontend.com
 
 1. Create a Supabase project at https://supabase.com
 2. Enable Email authentication in **Authentication > Providers**
-3. Copy your project URL and anon key from **Settings > API**
+3. Copy your project URL, anon key, and service role key from **Settings > API**
+   - `SUPABASE_URL`: Your project URL
+   - `SUPABASE_SECRET_KEY`: The `service_role` `secret` key (for backend operations, bypasses RLS)
 4. Add them to your `.env` file
+
+**Important**: The `SUPABASE_SECRET_KEY` (service role key) is required for backend database operations. Keep it secure and never expose it in client-side code.
 
 ### 4. Run the API
 
