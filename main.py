@@ -6,6 +6,7 @@ from api import (
     birth_chart_router,
     auth,
     websocket_router,
+    conversation_router,
 )
 import os
 import logging
@@ -49,6 +50,9 @@ app.include_router(auth.router)
 
 # Protected astrology endpoints
 app.include_router(birth_chart_router.router)
+
+# Conversation management endpoints
+app.include_router(conversation_router.router)
 
 # WebSocket router for AI assistant chat
 app.include_router(websocket_router.router)

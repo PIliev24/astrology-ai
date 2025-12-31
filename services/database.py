@@ -5,6 +5,7 @@ Handles all CRUD operations for user birth charts, aspects, relationships, and c
 
 import os
 from typing import Optional, List
+from uuid import UUID
 import logging
 
 from supabase import create_client, Client
@@ -20,6 +21,8 @@ from models.database import (
     ChatMessage,
     ChatMessageCreate,
     ConversationWithMessages,
+    ConversationWithCharts,
+    ChartWithConversations,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,6 +209,71 @@ def get_birth_chart_by_id(
         )
 
 
+def get_birth_data_by_chart_ids(
+    user_id: str,
+    chart_ids: List[str],
+) -> List[dict]:
+    """
+    Get birth_data only for specified charts (for compatibility calculations).
+    Does not fetch chart_data to reduce token usage.
+    
+    Args:
+        user_id: User ID (UUID string)
+        chart_ids: List of birth chart IDs (UUID strings)
+    
+    Returns:
+        List of dictionaries containing id, name, and birth_data for each chart
+    
+    Raises:
+        HTTPException: If charts not found or database operation fails
+    """
+    if not chart_ids:
+        return []
+    
+    try:
+        supabase = _create_supabase_client()
+        
+        # Fetch only id, name, and birth_data (no chart_data)
+        response = (
+            supabase.table("user_birth_charts")
+            .select("id,name,birth_data")
+            .eq("user_id", user_id)
+            .in_("id", chart_ids)
+            .execute()
+        )
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Birth charts not found"
+            )
+        
+        # Convert to list of dicts and ensure "country" -> "nation" mapping
+        result = []
+        for item in response.data:
+            birth_data = item.get("birth_data", {})
+            # Ensure nation field exists (map from country if needed)
+            if "country" in birth_data and "nation" not in birth_data:
+                birth_data["nation"] = birth_data["country"]
+            
+            result.append({
+                "id": item["id"],
+                "name": item["name"],
+                "birth_data": birth_data,
+            })
+        
+        return result
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching birth data: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch birth data: {str(e)}"
+        )
+
+
 def update_birth_chart(
     user_id: str,
     chart_id: str,
@@ -357,6 +425,7 @@ def save_conversation(
 def get_user_conversations(
     user_id: str,
     limit: Optional[int] = None,
+    include_chart_ids: bool = False,
 ) -> List[ChatConversation]:
     """
     Get all conversations for a user.
@@ -364,6 +433,7 @@ def get_user_conversations(
     Args:
         user_id: User ID (UUID string)
         limit: Optional limit on number of results
+        include_chart_ids: If True, include birth_chart_ids in response
     
     Returns:
         List[ChatConversation]: List of user's conversations
@@ -381,7 +451,18 @@ def get_user_conversations(
         
         response = query.execute()
         
-        return [ChatConversation(**item) for item in response.data]
+        conversations = []
+        for item in response.data:
+            conv = ChatConversation(**item)
+            if include_chart_ids:
+                try:
+                    chart_ids = get_conversation_chart_ids(user_id, str(conv.id))
+                    conv.birth_chart_ids = chart_ids
+                except Exception:
+                    conv.birth_chart_ids = []
+            conversations.append(conv)
+        
+        return conversations
     
     except Exception as e:
         logger.error(f"Error fetching conversations: {str(e)}")
@@ -657,5 +738,247 @@ def get_conversation_with_messages(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch conversation: {str(e)}"
+        )
+
+
+# ============================================================================
+# Conversation-Birth Chart Relations
+# ============================================================================
+
+def link_conversation_to_charts(
+    user_id: str,
+    conversation_id: str,
+    chart_ids: List[str],
+) -> None:
+    """
+    Link a conversation to one or more birth charts.
+    Verifies that both the conversation and charts belong to the user.
+    
+    Args:
+        user_id: User ID (UUID string)
+        conversation_id: Conversation ID (UUID string)
+        chart_ids: List of birth chart IDs to link
+    
+    Raises:
+        HTTPException: If conversation or chart not found, or linking fails
+    """
+    if not chart_ids:
+        return
+    
+    try:
+        # Verify conversation belongs to user
+        get_conversation_by_id(user_id, conversation_id)
+        
+        supabase = _create_supabase_client()
+        
+        # Verify all charts belong to user and prepare link data
+        links_to_create = []
+        for chart_id in chart_ids:
+            # Verify chart belongs to user
+            chart = get_birth_chart_by_id(user_id, chart_id)
+            links_to_create.append({
+                "conversation_id": str(conversation_id),
+                "birth_chart_id": str(chart_id),
+            })
+        
+        # Insert all links (Supabase will handle duplicates via primary key constraint)
+        if links_to_create:
+            supabase.table("conversation_birth_charts").insert(links_to_create).execute()
+        
+        logger.info(f"Linked conversation {conversation_id} to {len(links_to_create)} birth charts")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error linking conversation to charts: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to link conversation to charts: {str(e)}"
+        )
+
+
+def get_conversations_by_chart_id(
+    user_id: str,
+    chart_id: str,
+    limit: Optional[int] = None,
+) -> List[ChatConversation]:
+    """
+    Get all conversations linked to a specific birth chart.
+    
+    Args:
+        user_id: User ID (UUID string)
+        chart_id: Birth chart ID (UUID string)
+        limit: Optional limit on number of results
+    
+    Returns:
+        List[ChatConversation]: List of conversations linked to the chart
+    
+    Raises:
+        HTTPException: If chart not found or database operation fails
+    """
+    try:
+        # Verify chart belongs to user
+        get_birth_chart_by_id(user_id, chart_id)
+        
+        supabase = _create_supabase_client()
+        
+        # Query conversation IDs from the junction table
+        query = (
+            supabase.table("conversation_birth_charts")
+            .select("conversation_id")
+            .eq("birth_chart_id", chart_id)
+            .order("created_at", desc=True)
+        )
+        
+        if limit:
+            query = query.limit(limit)
+        
+        response = query.execute()
+        
+        # Extract conversation IDs
+        conversation_ids = [item["conversation_id"] for item in response.data]
+        
+        if not conversation_ids:
+            return []
+        
+        # Fetch conversations and filter by user_id
+        conversations_response = (
+            supabase.table("chat_conversations")
+            .select("*")
+            .in_("id", conversation_ids)
+            .eq("user_id", user_id)
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        
+        return [ChatConversation(**item) for item in conversations_response.data]
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching conversations by chart ID: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch conversations: {str(e)}"
+        )
+
+
+def get_conversation_chart_ids(
+    user_id: str,
+    conversation_id: str,
+) -> List[UUID]:
+    """
+    Get all birth chart IDs linked to a conversation.
+    
+    Args:
+        user_id: User ID (UUID string)
+        conversation_id: Conversation ID (UUID string)
+    
+    Returns:
+        List[UUID]: List of birth chart IDs linked to the conversation
+    
+    Raises:
+        HTTPException: If conversation not found or database operation fails
+    """
+    try:
+        # Verify conversation belongs to user
+        get_conversation_by_id(user_id, conversation_id)
+        
+        supabase = _create_supabase_client()
+        
+        response = (
+            supabase.table("conversation_birth_charts")
+            .select("birth_chart_id")
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+        
+        return [UUID(item["birth_chart_id"]) for item in response.data]
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching conversation chart IDs: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch chart IDs: {str(e)}"
+        )
+
+
+def get_conversation_with_charts(
+    user_id: str,
+    conversation_id: str,
+) -> ConversationWithCharts:
+    """
+    Get a conversation with its linked birth chart IDs.
+    
+    Args:
+        user_id: User ID (UUID string)
+        conversation_id: Conversation ID (UUID string)
+    
+    Returns:
+        ConversationWithCharts: Conversation with its linked chart IDs
+    
+    Raises:
+        HTTPException: If conversation not found or database operation fails
+    """
+    try:
+        conversation = get_conversation_by_id(user_id, conversation_id)
+        chart_ids = get_conversation_chart_ids(user_id, conversation_id)
+        
+        return ConversationWithCharts(
+            conversation=conversation,
+            birth_chart_ids=chart_ids
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching conversation with charts: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch conversation: {str(e)}"
+        )
+
+
+def get_chart_with_conversations(
+    user_id: str,
+    chart_id: str,
+    conversation_limit: Optional[int] = None,
+) -> ChartWithConversations:
+    """
+    Get a birth chart with all its linked conversations.
+    
+    Args:
+        user_id: User ID (UUID string)
+        chart_id: Birth chart ID (UUID string)
+        conversation_limit: Optional limit on number of conversations
+    
+    Returns:
+        ChartWithConversations: Birth chart with its linked conversations
+    
+    Raises:
+        HTTPException: If chart not found or database operation fails
+    """
+    try:
+        chart = get_birth_chart_by_id(user_id, chart_id)
+        conversations = get_conversations_by_chart_id(
+            user_id,
+            chart_id,
+            limit=conversation_limit,
+        )
+        
+        return ChartWithConversations(
+            chart=chart,
+            conversations=conversations
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching chart with conversations: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch chart with conversations: {str(e)}"
         )
 

@@ -9,11 +9,10 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from agents import Agent, RunContextWrapper, function_tool
 
-from services.database import get_birth_chart_by_id, get_user_birth_charts
-from services.compatibility import (
-    calculate_compatibility_score_from_charts,
-    calculate_compatibility_score_from_data,
-)
+from services.database import get_birth_chart_by_id, get_user_birth_charts, get_birth_data_by_chart_ids
+from services.compatibility import calculate_compatibility_score_from_data
+from utils.chart_data_extractor import extract_minimal_chart_data, extract_minimal_charts_data
+from utils.token_monitor import default_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -44,69 +43,31 @@ class SubjectBirthData(BaseModel):
 @function_tool
 async def get_user_birth_chart(
     ctx: RunContextWrapper[AgentContext],
-    chart_id: Optional[str] = None,
     chart_ids: Optional[list[str]] = None,
 ) -> str:
     """
-    Fetch a user's stored birth chart from the database.
+    Fetch a user's stored birth chart(s) from the database.
     
     Args:
         ctx: Agent context containing user_id
-        chart_id: Optional single chart ID to fetch
-        chart_ids: Optional list of chart IDs to fetch (use when multiple charts are referenced)
+        chart_ids: Optional list of chart IDs to fetch. Use [id] for single chart, [id1, id2] for multiple.
+                  If not provided, returns the most recent chart.
     
     Returns:
-        JSON string containing birth chart data with full chart_data (planets, houses, aspects, etc.)
-        but excluding the SVG chart string to reduce token usage.
-        If multiple charts, returns array. If single chart, returns object.
+        JSON string containing minimal chart data (planetary positions only) to reduce token usage.
+        If multiple charts, returns {"charts": [...]}. If single chart, returns object.
     """
     try:
         if not ctx.context or not ctx.context.user_id:
             return json.dumps({"error": "User context not available"})
         
-        # Priority: chart_id > chart_ids > most recent chart
-        if chart_id:
-            chart = get_birth_chart_by_id(ctx.context.user_id, chart_id)
-            # Return full chart_data but exclude SVG to reduce tokens
-            chart_data_copy = chart.chart_data
-            if isinstance(chart.chart_data, dict):
-                # Create a copy excluding the SVG chart field
-                chart_data_copy = {}
-                for key, value in chart.chart_data.items():
-                    if key != "chart":  # Exclude SVG string
-                        chart_data_copy[key] = value
-            elif chart.chart_data is None:
-                chart_data_copy = {}
-            
-            result = {
-                "id": str(chart.id),
-                "name": chart.name,
-                "birth_data": chart.birth_data,
-                "chart_data": chart_data_copy,  # Full chart data without SVG
-            }
-            return json.dumps(result, indent=2, default=str)
-        
+        # If chart_ids provided, fetch those charts
         if chart_ids and len(chart_ids) > 0:
             charts = []
             for ref_chart_id in chart_ids:
                 try:
                     chart = get_birth_chart_by_id(ctx.context.user_id, ref_chart_id)
-                    # Return full chart_data but exclude SVG
-                    chart_data_copy = chart.chart_data
-                    if isinstance(chart.chart_data, dict):
-                        chart_data_copy = {}
-                        for key, value in chart.chart_data.items():
-                            if key != "chart":  # Exclude SVG string
-                                chart_data_copy[key] = value
-                    elif chart.chart_data is None:
-                        chart_data_copy = {}
-                    
-                    charts.append({
-                        "id": str(chart.id),
-                        "name": chart.name,
-                        "birth_data": chart.birth_data,
-                        "chart_data": chart_data_copy,  # Full chart data without SVG
-                    })
+                    charts.append(chart)
                 except Exception as e:
                     logger.warning(f"Could not fetch chart {ref_chart_id}: {str(e)}")
                     continue
@@ -114,36 +75,43 @@ async def get_user_birth_chart(
             if not charts:
                 return json.dumps({"error": "None of the referenced charts could be found"})
             
-            if len(charts) == 1:
-                return json.dumps(charts[0], indent=2, default=str)
-            else:
-                return json.dumps({"charts": charts}, indent=2, default=str)
+            # Extract minimal chart data (planetary positions only)
+            result = extract_minimal_charts_data(charts)
+            result_json = json.dumps(result, indent=2, default=str)
+            
+            # Check token usage and warn if approaching limit
+            within_limit, token_count, message = default_monitor.check_limit(result_json)
+            if not within_limit:
+                logger.warning(f"Token limit exceeded in get_user_birth_chart: {message}")
+                # Truncate if needed
+                result_json = default_monitor.truncate_content(result_json, default_monitor.limit - 10000)
+            elif message:
+                logger.info(f"Token usage warning: {message}")
+            
+            return result_json
         
-        # Fallback to most recent chart - need to fetch full chart data
+        # Fallback to most recent chart
         charts = get_user_birth_charts(ctx.context.user_id)
         if not charts:
             return json.dumps({"error": "No birth charts found for this user"})
+        
         # Fetch full chart data for the most recent chart
         chart = get_birth_chart_by_id(ctx.context.user_id, str(charts[0].id))
         
-        # Return full chart_data but exclude SVG
-        chart_data_copy = chart.chart_data
-        if isinstance(chart.chart_data, dict):
-            chart_data_copy = {}
-            for key, value in chart.chart_data.items():
-                if key != "chart":  # Exclude SVG string
-                    chart_data_copy[key] = value
-        elif chart.chart_data is None:
-            chart_data_copy = {}
+        # Extract minimal chart data (planetary positions only)
+        result = extract_minimal_chart_data(chart)
+        result_json = json.dumps(result, indent=2, default=str)
         
-        result = {
-            "id": str(chart.id),
-            "name": chart.name,
-            "birth_data": chart.birth_data,
-            "chart_data": chart_data_copy,  # Full chart data without SVG
-        }
+        # Check token usage and warn if approaching limit
+        within_limit, token_count, message = default_monitor.check_limit(result_json)
+        if not within_limit:
+            logger.warning(f"Token limit exceeded in get_user_birth_chart: {message}")
+            # Truncate if needed
+            result_json = default_monitor.truncate_content(result_json, default_monitor.limit - 10000)
+        elif message:
+            logger.info(f"Token usage warning: {message}")
         
-        return json.dumps(result, indent=2, default=str)
+        return result_json
     
     except Exception as e:
         logger.error(f"Error fetching birth chart: {str(e)}")
@@ -183,29 +151,55 @@ async def list_user_charts(
 
 
 @function_tool
-async def calculate_compatibility_score(
+async def calculate_compatibility(
     ctx: RunContextWrapper[AgentContext],
-    chart_id_1: str,
-    chart_id_2: str,
+    chart_ids: Optional[list[str]] = None,
+    subject1_birth_data: Optional[SubjectBirthData] = None,
+    subject2_birth_data: Optional[SubjectBirthData] = None,
 ) -> str:
     """
-    Calculate compatibility score between two saved birth charts.
+    Calculate compatibility score between two people.
     
-    Use this tool when users ask about relationships, compatibility, or synastry between two people.
+    Use this tool when users ask about relationships, compatibility, or synastry.
+    Provide either chart_ids (for saved charts) OR birth_data (for unsaved data), not both.
     
     Args:
         ctx: Agent context containing user_id
-        chart_id_1: ID of the first birth chart
-        chart_id_2: ID of the second birth chart
+        chart_ids: Optional list of 2 chart IDs for saved charts [id1, id2]
+        subject1_birth_data: Optional birth data for first person (if charts not saved)
+        subject2_birth_data: Optional birth data for second person (if charts not saved)
     
     Returns:
         JSON string containing compatibility score, description, destiny sign, and aspects
     """
     try:
-        compatibility_data = await calculate_compatibility_score_from_charts(
-            ctx.context.user_id,
-            chart_id_1,
-            chart_id_2,
+        if not ctx.context or not ctx.context.user_id:
+            return json.dumps({"error": "User context not available"})
+        
+        # Determine data source: chart_ids or birth_data
+        if chart_ids and len(chart_ids) >= 2:
+            # Fetch birth_data from saved charts (no chart_data to reduce tokens)
+            birth_data_list = get_birth_data_by_chart_ids(ctx.context.user_id, chart_ids[:2])
+            
+            if len(birth_data_list) < 2:
+                return json.dumps({"error": "Could not find both charts. Please provide valid chart IDs."})
+            
+            subject1_data = birth_data_list[0]["birth_data"]
+            subject2_data = birth_data_list[1]["birth_data"]
+            
+        elif subject1_birth_data and subject2_birth_data:
+            # Use provided birth data
+            subject1_data = subject1_birth_data.model_dump()
+            subject2_data = subject2_birth_data.model_dump()
+        else:
+            return json.dumps({
+                "error": "Please provide either 2 chart_ids OR both subject1_birth_data and subject2_birth_data"
+            })
+        
+        # Calculate compatibility
+        compatibility_data = await calculate_compatibility_score_from_data(
+            subject1_data,
+            subject2_data,
         )
         
         return json.dumps(compatibility_data, indent=2, default=str)
@@ -215,127 +209,48 @@ async def calculate_compatibility_score(
         return json.dumps({"error": f"Failed to calculate compatibility: {str(e)}"})
 
 
-@function_tool
-async def calculate_compatibility_from_data(
-    subject1_data: SubjectBirthData,
-    subject2_data: SubjectBirthData,
-) -> str:
-    """
-    Calculate compatibility score from birth data (when charts are not saved).
-    
-    Use this when users provide birth data for two people but don't have saved charts.
-    
-    Args:
-        subject1_data: Birth data for first person (year, month, day, hour, minute, city, nation, longitude, latitude, timezone)
-        subject2_data: Birth data for second person (same format)
-    
-    Returns:
-        JSON string containing compatibility score, description, destiny sign, and aspects
-    """
-    try:
-        # Convert Pydantic models to dictionaries for the service function
-        subject1_dict = subject1_data.model_dump()
-        subject2_dict = subject2_data.model_dump()
-        
-        compatibility_data = await calculate_compatibility_score_from_data(
-            subject1_dict,
-            subject2_dict,
-        )
-        
-        return json.dumps(compatibility_data, indent=2, default=str)
-    
-    except Exception as e:
-        logger.error(f"Error calculating compatibility from data: {str(e)}")
-        return json.dumps({"error": f"Failed to calculate compatibility: {str(e)}"})
+# Agent Instructions - Optimized for token efficiency
+ASTROLOGY_SPECIALIST_INSTRUCTIONS = """You are an expert astrologer specializing in natal chart interpretation and relationship compatibility.
 
+## Your Role
+Interpret birth charts, explain planetary positions in signs and houses, analyze aspects, and provide compatibility insights. Use warm, accessible, conversational language that feels natural and native.
 
-# Agent Instructions following best practices
-ASTROLOGY_SPECIALIST_INSTRUCTIONS = """You are an expert astrologer with deep knowledge of natal chart interpretation, planetary positions, aspects, houses, and relationship compatibility analysis.
+## Response Style
+- Keep responses concise and to the point - avoid unnecessary verbosity
+- Use natural, conversational language - write as you would speak to a friend
+- Be direct and clear - get to the point quickly
+- Use simple, everyday words when possible - avoid overly formal or academic language
+- Make responses feel personal and relatable
 
-## Your Role and Expertise
+## Tool Usage
 
-You specialize in:
-- Interpreting birth charts and explaining planetary positions in signs and houses
-- Describing how planetary aspects influence personality and life experiences
-- Explaining house meanings and how planets in houses affect different life areas
-- Analyzing relationship compatibility through synastry and composite charts
-- Providing insights about the Ascendant, Midheaven, and other important chart points
-- Connecting astrological concepts to real-life experiences in an accessible way
+Charts: Use `get_user_birth_chart(chart_ids=["id"])` for single chart or `get_user_birth_chart(chart_ids=["id1", "id2"])` for multiple. If no IDs provided, returns most recent. Use `list_user_charts()` to help users find charts.
 
-## Your Communication Style
+Compatibility: IMPORTANT - When calculating compatibility, use ONLY `calculate_compatibility(chart_ids=["id1", "id2"])` for saved charts OR `calculate_compatibility(subject1_birth_data=..., subject2_birth_data=...)` for unsaved data. DO NOT call `get_user_birth_chart` before calculating compatibility - the compatibility tool handles fetching birth_data directly to reduce token usage.
 
-- **Tone**: Warm, educational, insightful, and supportive
-- **Language**: Clear and accessible - avoid overly technical jargon unless you explain it
-- **Approach**: Connect astrological concepts to real-life experiences when helpful
-- **Respect**: Remember that astrology is a tool for self-reflection and understanding, not deterministic fate
+## Interpretation Guidelines
+- Reference specific positions (e.g., "Sun in Leo, 5th house")
+- Explain planet meanings and sign/house influences
+- Be specific but concise
+- For compatibility, balance strengths and challenges
 
-## How to Use Your Tools
-
-When a user asks about their birth chart:
-1. If the user's message mentions chart IDs or references charts, use `get_user_birth_chart(chart_id="...")` for a single chart or `get_user_birth_chart(chart_ids=["id1", "id2"])` for multiple charts
-2. If no chart_id is provided, `get_user_birth_chart()` will return the most recent chart
-3. If they have multiple charts, use `list_user_charts()` to help them find the right one
-4. If no saved chart exists and they provide birth data, explain that they need to create a chart first via the API
-5. The tool returns minimal data (planets and houses) to reduce token usage - avoid requesting full chart data unless necessary
-
-When a user asks about compatibility or relationships:
-1. If they mention two chart IDs, use `calculate_compatibility_score(chart_id_1, chart_id_2)`
-2. If they provide birth data for two people but no chart IDs, use `calculate_compatibility_from_data()` with the birth data
-3. Always interpret the compatibility results in a meaningful, insightful way
-
-## Interpreting Charts
-
-When interpreting charts:
-- Always reference specific planetary positions (e.g., "Sun in Leo", "Moon in Cancer")
-- Explain what each planet represents and how its sign placement affects the person
-- Describe house meanings and how planets in houses influence different life areas
-- Explain aspects between planets and their significance
-- Be specific and detailed in your analysis
-
-## Examples of Good Responses
-
-<example_1>
-User: "What does my Sun in Leo mean?"
-
-You: "Your Sun in Leo indicates a vibrant, confident personality with a natural flair for leadership and self-expression. Leo is ruled by the Sun itself, so this placement amplifies your core identity. You likely have a strong need to be recognized and appreciated, and you shine brightest when you can express your creativity and individuality. People with Sun in Leo often have a warm, generous nature and enjoy being the center of attention in positive ways. Your challenge may be balancing your need for recognition with humility and considering others' needs."
-</example_1>
-
-<example_2>
-User: "Tell me about compatibility between my chart and my partner's chart."
-
-You: "I'll calculate the compatibility between your charts. Let me fetch both charts and analyze the synastry aspects and house overlays to give you insights into your relationship dynamics."
-[Then use calculate_compatibility_score tool and provide detailed interpretation]
-</example_2>
-
-## Important Rules
-
-- Always stay focused on astrology - if asked about unrelated topics, gently redirect
-- If you're unsure about something, say so rather than guessing
-- When interpreting compatibility, be balanced - highlight both strengths and potential challenges
-- Use the chart data provided to you - don't make assumptions about planetary positions
-- If a user asks about a chart that doesn't exist, guide them to create one first
-
-## Step-by-Step Thinking
-
-When analyzing a chart or answering a question:
-1. First, identify what specific information the user is asking about
-2. Retrieve the relevant chart data using your tools
-3. Analyze the planetary positions, aspects, and houses relevant to the question
-4. Synthesize your findings into a coherent interpretation
-5. Provide your answer in a clear, organized manner
-
-Remember: Your goal is to help users understand themselves and their relationships through the lens of astrology, providing meaningful insights that empower self-reflection and growth."""
+## Rules
+- Stay focused on astrology
+- Don't guess - say if unsure
+- Use provided chart data only
+- Guide users to create charts if needed
+- Keep responses brief and conversational"""
 
 
 # Initialize the agent
 astrology_specialist = Agent(
     name="Astrology Specialist",
     instructions=ASTROLOGY_SPECIALIST_INSTRUCTIONS,
+    model='gpt-5-mini',
     tools=[
         get_user_birth_chart,
         list_user_charts,
-        calculate_compatibility_score,
-        calculate_compatibility_from_data,
+        calculate_compatibility,
     ],
 )
 

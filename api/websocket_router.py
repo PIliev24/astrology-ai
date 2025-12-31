@@ -18,7 +18,11 @@ from services.database import (
     save_conversation,
     get_conversation_by_id,
     save_message,
+    link_conversation_to_charts,
+    get_conversation_history,
+    update_conversation,
 )
+from utils.token_monitor import default_monitor
 from supabase import create_client
 import os
 from models.ai import (
@@ -28,7 +32,7 @@ from models.ai import (
     ConnectionResponse,
     ToolCallMetadata,
 )
-from models.database import ChatConversationCreate, ChatMessageCreate
+from models.database import ChatConversationCreate, ChatMessageCreate, ChatConversationUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +163,16 @@ async def websocket_chat(
                     await websocket.send_json(error_response.model_dump(mode='json'))
                     continue
                 
-                # Save user message to database
+                # Helper function to generate title from user message
+                def generate_title_from_message(content: str, max_length: int = 100) -> str:
+                    """Generate conversation title from user message, truncated if needed."""
+                    title = content.strip()
+                    if len(title) > max_length:
+                        title = title[:max_length].rstrip() + "..."
+                    return title
+                
+                # Get or create conversation
+                # is_new_conversation = False
                 if not current_conversation_id:
                     if message_request.conversation_id:
                         # Try to load existing conversation
@@ -169,20 +182,38 @@ async def websocket_chat(
                                 str(message_request.conversation_id),
                             )
                             current_conversation_id = conversation.id
+                            # If conversation exists but has no title, check if this is the first message
+                            if not conversation.title:
+                                # Check if there are any existing messages
+                                existing_messages = get_conversation_history(str(current_conversation_id), limit=1)
+                                # Only set title if this is the first message (no existing messages)
+                                if not existing_messages:
+                                    title = generate_title_from_message(message_request.content)
+                                    update_conversation(
+                                        user_id,
+                                        str(current_conversation_id),
+                                        ChatConversationUpdate(title=title),
+                                    )
                         except HTTPException:
                             # Conversation not found, create new one
+                            # Use first user message as title (truncated to 100 chars)
+                            title = generate_title_from_message(message_request.content)
                             new_conversation = save_conversation(
                                 user_id,
-                                ChatConversationCreate(title=None),
+                                ChatConversationCreate(title=title),
                             )
                             current_conversation_id = new_conversation.id
+                            # is_new_conversation = True
                     else:
                         # Create new conversation
+                        # Use first user message as title (truncated to 100 chars)
+                        title = generate_title_from_message(message_request.content)
                         new_conversation = save_conversation(
                             user_id,
-                            ChatConversationCreate(title=None),
+                            ChatConversationCreate(title=title),
                         )
                         current_conversation_id = new_conversation.id
+                        # is_new_conversation = True
                         
                         # Send conversation created message
                         conversation_response = ChatMessageResponse(
@@ -193,6 +224,30 @@ async def websocket_chat(
                         )
                         await websocket.send_json(conversation_response.model_dump(mode='json'))
                 
+                # Link conversation to birth charts if chart_references are provided
+                if message_request.chart_references and len(message_request.chart_references) > 0:
+                    try:
+                        link_conversation_to_charts(
+                            user_id,
+                            str(current_conversation_id),
+                            message_request.chart_references,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to link conversation to charts: {str(e)}")
+                        # Don't fail the request if linking fails
+                
+                # Save user message to database
+                save_message(
+                    ChatMessageCreate(
+                        conversation_id=current_conversation_id,
+                        role="user",
+                        content=message_request.content,
+                        metadata={
+                            "chart_references": message_request.chart_references or [],
+                        } if message_request.chart_references else None,
+                    ),
+                )
+                
                 # Prepare user input - append chart_references info if present
                 # Note: Conversation history is handled automatically by the agents library
                 # We don't manually pass it to reduce token usage
@@ -200,9 +255,21 @@ async def websocket_chat(
                 if message_request.chart_references and len(message_request.chart_references) > 0:
                     chart_refs_str = ", ".join(message_request.chart_references)
                     if len(message_request.chart_references) == 1:
-                        user_input += f"\n\n[Note: Chart ID {chart_refs_str} is referenced in this conversation. Use get_user_birth_chart with chart_id='{chart_refs_str}' or chart_ids=['{chart_refs_str}'] to fetch it.]"
+                        user_input += f"\n\n[Note: Chart ID {chart_refs_str} is referenced. Use get_user_birth_chart(chart_ids=['{chart_refs_str}']) to fetch it.]"
                     else:
-                        user_input += f"\n\n[Note: Chart IDs {chart_refs_str} are referenced. Use get_user_birth_chart with chart_ids={message_request.chart_references} to fetch them.]"
+                        user_input += f"\n\n[Note: Chart IDs {chart_refs_str} are referenced. Use get_user_birth_chart(chart_ids={message_request.chart_references}) to fetch them.]"
+                
+                # Check token usage before running agent
+                within_limit, token_count, message = default_monitor.check_limit(user_input)
+                if not within_limit:
+                    error_msg = default_monitor.get_user_friendly_error(token_count)
+                    await websocket.send_json(ErrorResponse(
+                        error="request_too_large",
+                        message=error_msg
+                    ).model_dump())
+                    continue
+                elif message:
+                    logger.info(f"Token usage warning: {message}")
                 
                 # Track tool calls for metadata
                 tool_calls_metadata: list[ToolCallMetadata] = []
@@ -270,6 +337,19 @@ async def websocket_chat(
                     
                     # Get final output
                     final_output = result.final_output or assistant_response_content
+                    
+                    # Check token usage on response
+                    within_limit, token_count, message = default_monitor.check_limit(final_output)
+                    if not within_limit:
+                        logger.warning(f"Response exceeded token limit: {token_count}")
+                        # Truncate response if needed
+                        final_output = default_monitor.truncate_content(
+                            final_output, 
+                            default_monitor.limit - 10000
+                        )
+                        final_output += "\n\n[Response truncated due to size limits. Please ask more specific questions.]"
+                    elif message:
+                        logger.info(f"Response token usage warning: {message}")
                     
                     # Save assistant message to database
                     save_message(

@@ -48,6 +48,7 @@ class ChatConversation(BaseModel):
     title: Optional[str] = Field(None, description="Conversation title")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
+    birth_chart_ids: Optional[list[UUID]] = Field(None, description="List of linked birth chart IDs (optional, for listing)")
     
     model_config = {"from_attributes": True}
 
@@ -99,3 +100,26 @@ class ConversationWithMessages(BaseModel):
     conversation: ChatConversation = Field(..., description="Conversation metadata")
     messages: list[ChatMessage] = Field(..., description="List of messages in the conversation")
 
+
+class ConversationBirthChart(BaseModel):
+    """Model for conversation-birth chart junction table"""
+    
+    conversation_id: UUID = Field(..., description="Conversation ID")
+    birth_chart_id: UUID = Field(..., description="Birth chart ID")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    
+    model_config = {"from_attributes": True}
+
+
+class ConversationWithCharts(BaseModel):
+    """Model for conversation with its linked birth charts"""
+    
+    conversation: ChatConversation = Field(..., description="Conversation metadata")
+    birth_chart_ids: list[UUID] = Field(default_factory=list, description="List of linked birth chart IDs")
+
+
+class ChartWithConversations(BaseModel):
+    """Model for birth chart with its linked conversations"""
+    
+    chart: UserBirthChart = Field(..., description="Birth chart data")
+    conversations: list[ChatConversation] = Field(default_factory=list, description="List of conversations linked to this chart")

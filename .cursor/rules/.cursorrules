@@ -1,0 +1,248 @@
+# Cursor Rules for Astrology API
+
+## Project Overview
+This is a FastAPI-based astrology calculation service with Supabase authentication. The API provides birth chart calculations, compatibility analysis, and chart generation using RapidAPI Hub - Astrologer.
+
+## Tech Stack
+- **Framework**: FastAPI 0.121.1+
+- **Python**: 3.12+
+- **Database**: Supabase (PostgreSQL)
+- **Authentication**: Supabase JWT
+- **Package Manager**: uv (preferred) or pip
+- **External APIs**: RapidAPI Hub - Astrologer
+- **HTTP Client**: httpx
+- **Location Services**: geopy, timezonefinder
+
+## Project Structure
+
+```
+astrology-api/
+├── api/                    # FastAPI routers (endpoints)
+│   ├── auth.py            # Authentication endpoints (public)
+│   ├── birth_chart_router.py
+│   └── websocket_router.py
+├── middleware/            # Request middleware
+│   └── auth.py           # JWT verification dependency
+├── models/               # Pydantic models
+│   ├── astrology.py     # Request/response models for API
+│   └── database.py      # Database entity models
+├── services/             # Business logic layer
+│   ├── birth_chart.py
+│   ├── compatibility.py
+│   ├── database.py
+│   ├── date_parser.py
+│   └── location_resolver.py
+├── ai_agents/            # AI agent implementations
+│   └── astrology_specialist_agent.py
+├── migrations/           # SQL migrations
+├── main.py              # FastAPI application entry point
+└── pyproject.toml       # Project dependencies
+```
+
+## Code Organization Principles
+
+### 1. Separation of Concerns
+- **Routers** (`api/`): Handle HTTP requests/responses, validation, authentication
+- **Services** (`services/`): Business logic, external API calls, data processing
+- **Models** (`models/`): Pydantic models for validation and serialization
+- **Middleware** (`middleware/`): Cross-cutting concerns (auth, logging)
+
+### 2. Router Pattern
+- Use FastAPI `APIRouter` with appropriate prefix and tags
+- All protected endpoints use `user: dict = Depends(get_current_user)`
+- Public endpoints (auth) don't require authentication
+- Include proper docstrings, summary, and description in route decorators
+
+### 3. Service Layer Pattern
+- Services are async functions
+- Services handle external API calls (RapidAPI)
+- Services handle business logic and data transformation
+- Services raise `HTTPException` with appropriate status codes
+- Use logging for errors and important operations
+
+### 4. Model Patterns
+- Use Pydantic `BaseModel` for all request/response models
+- Use `Field(...)` with descriptions for API documentation
+- Separate models for:
+  - API requests/responses (`models/astrology.py`)
+  - Database entities (`models/database.py`)
+  - Create/Update operations (separate from read models)
+
+## Authentication
+
+### Protected Endpoints
+- Use `user: dict = Depends(get_current_user)` dependency
+- User dict contains: `id`, `email`, `created_at`
+- Always verify user owns resources before operations (e.g., `user["id"]`)
+
+### Public Endpoints
+- Auth endpoints (`/auth/*`) are public
+- Health check (`/health`) is public
+
+## Error Handling
+
+### Standard Pattern
+```python
+try:
+    # operation
+except HTTPException:
+    raise  # Re-raise HTTP exceptions
+except Exception as e:
+    logger.error(f"Error message: {str(e)}")
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"User-friendly error message: {str(e)}"
+    )
+```
+
+### HTTP Status Codes
+- `200` - Success
+- `201` - Created
+- `204` - No Content (delete operations)
+- `400` - Bad Request (validation errors)
+- `401` - Unauthorized (missing/invalid token)
+- `404` - Not Found
+- `500` - Internal Server Error
+- `502` - Bad Gateway (external API errors)
+- `504` - Gateway Timeout
+
+## Database Operations
+
+### Supabase Client
+- Use `get_supabase_client()` dependency or import from `middleware.auth`
+- Always use service role key for backend operations
+- Use RLS policies for security (enforced by Supabase)
+
+### Database Models
+- Use Pydantic models with `model_config = {"from_attributes": True}` for database entities
+- Separate Create/Update models from Read models
+- Store JSON data in `Dict[str, Any]` fields
+
+## External API Integration
+
+### RapidAPI Pattern
+- Store API key in environment variable: `RAPIDAPI_KEY`
+- Use `httpx.AsyncClient` with timeout (30 seconds default)
+- Handle timeout exceptions explicitly
+- Validate response structure before returning
+- Log errors with context
+- Return appropriate HTTP status codes (502 for API errors, 504 for timeouts)
+
+## Environment Variables
+
+Required:
+- `SUPABASE_URL` - Supabase project URL
+- `SUPABASE_SECRET_KEY` - Service role key (backend only)
+- `RAPIDAPI_KEY` - RapidAPI authentication key
+
+Optional:
+- `GEONAMES_USERNAME` - For location lookup
+- `FRONTEND_URL` - For CORS configuration
+
+## Logging
+
+- Use `logging.getLogger(__name__)` in each module
+- Log level: INFO for normal operations, ERROR for exceptions
+- Include context in error messages
+- Format: `f"Operation failed: {str(e)}"`
+
+## Code Style
+
+### Type Hints
+- Always use type hints for function parameters and return types
+- Use `Optional[Type]` for nullable values
+- Use `Dict[str, Any]` for flexible JSON structures
+
+### Async/Await
+- All route handlers are async: `async def endpoint(...)`
+- All service functions are async: `async def service_function(...)`
+- Use `await` for async operations
+
+### Imports
+- Group imports: standard library, third-party, local
+- Use absolute imports from project root
+- Example:
+```python
+from fastapi import APIRouter, HTTPException, Depends, status
+from uuid import UUID
+from typing import List
+
+from models.astrology import BirthChartResponse
+from services.birth_chart import generate_birth_chart
+from middleware.auth import get_current_user
+```
+
+## API Design
+
+### Request/Response Models
+- Always define Pydantic models for requests and responses
+- Use `response_model` in route decorators
+- Include field descriptions for OpenAPI docs
+
+### Endpoint Naming
+- Use RESTful conventions:
+  - `POST /resource` - Create
+  - `GET /resource` - List
+  - `GET /resource/{id}` - Get one
+  - `DELETE /resource/{id}` - Delete
+
+### Response Format
+- Success: Return model directly or list of models
+- Errors: FastAPI automatically formats `HTTPException` as `{"detail": "message"}`
+
+## Testing Considerations
+
+- Test protected endpoints with valid JWT tokens
+- Mock external API calls (RapidAPI) in tests
+- Test error cases (invalid input, missing auth, API failures)
+- Test database operations with test database
+
+## Dependencies
+
+### Adding Dependencies
+- Use `uv add package-name` (preferred)
+- Or add to `pyproject.toml` and run `uv sync`
+- Always specify version constraints
+
+### Common Patterns
+- Use `httpx` for async HTTP requests
+- Use `python-dotenv` for environment variables
+- Use `supabase` client for database/auth operations
+
+## Migration Guidelines
+
+### When Adding New Features
+1. Create Pydantic models in `models/` (API and database)
+2. Create service functions in `services/`
+3. Create router endpoints in `api/`
+4. Add authentication if needed
+5. Update `main.py` to include new router
+6. Add SQL migrations if schema changes needed
+
+### When Modifying Existing Features
+- Maintain backward compatibility when possible
+- Update models, services, and routers together
+- Update tests accordingly
+
+## Security Best Practices
+
+- Never expose `SUPABASE_SECRET_KEY` in client code
+- Always verify user ownership of resources
+- Use Supabase RLS policies for additional security
+- Validate all user input with Pydantic models
+- Sanitize error messages (don't expose internal details)
+
+## Performance Considerations
+
+- Use async/await for I/O operations
+- Cache location lookups when possible
+- Consider pagination for list endpoints
+- Exclude large data (like SVG) from list responses
+
+## Documentation
+
+- Include docstrings in all route handlers
+- Use FastAPI's `summary` and `description` parameters
+- Document request/response models with `Field(..., description="...")`
+- Keep README.md updated with new endpoints
+
