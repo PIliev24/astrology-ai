@@ -5,8 +5,8 @@ Uses RapidAPI Hub - Astrologer for birth chart calculations
 
 import os
 import logging
+from typing import Dict, Any
 import httpx
-from typing import Dict, Any, Optional
 from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)

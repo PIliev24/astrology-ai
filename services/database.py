@@ -24,6 +24,11 @@ from models.database import (
     ConversationWithCharts,
     ChartWithConversations,
 )
+from models.subscription import (
+    Subscription,
+    SubscriptionUpdate,
+    Usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -352,15 +357,12 @@ def delete_birth_chart(
     try:
         supabase = _create_supabase_client()
         
-        response = (
-            supabase.table("user_birth_charts")
-            .delete()
-            .eq("id", chart_id)
-            .eq("user_id", user_id)
+        supabase.table("user_birth_charts") \
+            .delete() \
+            .eq("id", chart_id) \
+            .eq("user_id", user_id) \
             .execute()
-        )
         
-        # Note: Supabase delete doesn't return data, so we can't verify if it existed
         logger.info(f"Birth chart {chart_id} deleted for user {user_id}")
     
     except Exception as e:
@@ -592,13 +594,11 @@ def delete_conversation(
         supabase = _create_supabase_client()
         
         # Messages will be deleted automatically via CASCADE
-        response = (
-            supabase.table("chat_conversations")
-            .delete()
-            .eq("id", conversation_id)
-            .eq("user_id", user_id)
+        supabase.table("chat_conversations") \
+            .delete() \
+            .eq("id", conversation_id) \
+            .eq("user_id", user_id) \
             .execute()
-        )
         
         logger.info(f"Conversation {conversation_id} deleted for user {user_id}")
     
@@ -775,7 +775,7 @@ def link_conversation_to_charts(
         links_to_create = []
         for chart_id in chart_ids:
             # Verify chart belongs to user
-            chart = get_birth_chart_by_id(user_id, chart_id)
+            get_birth_chart_by_id(user_id, chart_id)
             links_to_create.append({
                 "conversation_id": str(conversation_id),
                 "birth_chart_id": str(chart_id),
@@ -980,5 +980,360 @@ def get_chart_with_conversations(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch chart with conversations: {str(e)}"
+        )
+
+
+# ============================================================================
+# Subscription Operations
+# ============================================================================
+
+def get_or_create_user_subscription(
+    user_id: str,
+    stripe_customer_id: Optional[str] = None,
+) -> Subscription:
+    """
+    Get existing subscription or create a new free tier subscription for user.
+    
+    Args:
+        user_id: User ID (UUID string)
+        stripe_customer_id: Optional Stripe customer ID. If not provided, will use placeholder for free tier.
+    
+    Returns:
+        Subscription: User's subscription (existing or newly created)
+    
+    Raises:
+        HTTPException: If database operation fails
+    """
+    try:
+        supabase = _create_supabase_client()
+        
+        # Try to get existing subscription
+        response = (
+            supabase.table("user_subscriptions")
+            .select("*")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if response.data:
+            return Subscription(**response.data)
+        
+        # Create new free tier subscription
+        # Use provided customer ID or generate placeholder for free tier
+        customer_id = stripe_customer_id or f"cus_free_{user_id}"
+        
+        data = {
+            "user_id": user_id,
+            "stripe_customer_id": customer_id,
+            "status": "free",
+            "billing_status": "active",
+        }
+        
+        create_response = supabase.table("user_subscriptions").insert(data).execute()
+        
+        if not create_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create subscription"
+            )
+        
+        logger.info(f"Created free tier subscription for user {user_id}")
+        return Subscription(**create_response.data[0])
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting or creating subscription: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get or create subscription: {str(e)}"
+        )
+
+
+def get_user_subscription(user_id: str) -> Subscription:
+    """
+    Get user's current subscription.
+    
+    Args:
+        user_id: User ID (UUID string)
+    
+    Returns:
+        Subscription: User's subscription
+    
+    Raises:
+        HTTPException: If subscription not found or database operation fails
+    """
+    try:
+        supabase = _create_supabase_client()
+        
+        response = (
+            supabase.table("user_subscriptions")
+            .select("*")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription not found"
+            )
+        
+        return Subscription(**response.data)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching subscription: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch subscription: {str(e)}"
+        )
+
+
+def update_user_subscription(
+    user_id: str,
+    update_data: SubscriptionUpdate,
+) -> Subscription:
+    """
+    Update user's subscription (typically from Stripe webhook).
+    
+    Args:
+        user_id: User ID (UUID string)
+        update_data: Fields to update
+    
+    Returns:
+        Subscription: Updated subscription
+    
+    Raises:
+        HTTPException: If subscription not found or update fails
+    """
+    try:
+        supabase = _create_supabase_client()
+        
+        # Build update dict from non-None fields
+        update_dict = {}
+        if update_data.stripe_subscription_id is not None:
+            update_dict["stripe_subscription_id"] = update_data.stripe_subscription_id
+        if update_data.stripe_price_id is not None:
+            update_dict["stripe_price_id"] = update_data.stripe_price_id
+        if update_data.status is not None:
+            update_dict["status"] = update_data.status
+        if update_data.billing_status is not None:
+            update_dict["billing_status"] = update_data.billing_status
+        if update_data.current_period_start is not None:
+            update_dict["current_period_start"] = update_data.current_period_start
+        if update_data.current_period_end is not None:
+            update_dict["current_period_end"] = update_data.current_period_end
+        if update_data.cancel_at is not None:
+            update_dict["cancel_at"] = update_data.cancel_at
+        if update_data.canceled_at is not None:
+            update_dict["canceled_at"] = update_data.canceled_at
+        
+        if not update_dict:
+            # No fields to update, return existing subscription
+            return get_user_subscription(user_id)
+        
+        # Always update the updated_at timestamp
+        update_dict["updated_at"] = "now()"
+        
+        response = (
+            supabase.table("user_subscriptions")
+            .update(update_dict)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription not found"
+            )
+        
+        logger.info(f"Updated subscription for user {user_id}")
+        return Subscription(**response.data[0])
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating subscription: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update subscription: {str(e)}"
+        )
+
+
+# ============================================================================
+# Usage Tracking Operations
+# ============================================================================
+
+def get_user_usage(user_id: str) -> Usage:
+    """
+    Get user's current message usage (within rolling 24h window).
+    
+    Args:
+        user_id: User ID (UUID string)
+    
+    Returns:
+        Usage: User's usage record
+    
+    Raises:
+        HTTPException: If usage record not found or database operation fails
+    """
+    try:
+        supabase = _create_supabase_client()
+        
+        response = (
+            supabase.table("user_usage")
+            .select("*")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not response.data:
+            # Create new usage record if it doesn't exist
+            return create_user_usage(user_id)
+        
+        return Usage(**response.data)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching usage: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch usage: {str(e)}"
+        )
+
+
+def create_user_usage(user_id: str) -> Usage:
+    """
+    Create a new usage record for user.
+    
+    Args:
+        user_id: User ID (UUID string)
+    
+    Returns:
+        Usage: Created usage record
+    
+    Raises:
+        HTTPException: If database operation fails
+    """
+    try:
+        supabase = _create_supabase_client()
+        
+        data = {
+            "user_id": user_id,
+            "message_count": 0,
+            "last_reset_at": "now()",
+        }
+        
+        response = supabase.table("user_usage").insert(data).execute()
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create usage record"
+            )
+        
+        logger.info(f"Created usage record for user {user_id}")
+        return Usage(**response.data[0])
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating usage record: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create usage record: {str(e)}"
+        )
+
+
+def increment_user_message_count(user_id: str) -> Usage:
+    """
+    Increment user's message count by 1.
+    
+    Args:
+        user_id: User ID (UUID string)
+    
+    Returns:
+        Usage: Updated usage record
+    
+    Raises:
+        HTTPException: If database operation fails
+    """
+    try:
+        supabase = _create_supabase_client()
+        
+        # Increment by 1
+        response = (
+            supabase.table("user_usage")
+            .update({"message_count": "message_count + 1"})
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        if not response.data:
+            # Create if doesn't exist and increment
+            create_user_usage(user_id)
+            return increment_user_message_count(user_id)
+        
+        return Usage(**response.data[0])
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error incrementing message count: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to increment message count: {str(e)}"
+        )
+
+
+def reset_user_usage(user_id: str) -> Usage:
+    """
+    Reset user's message count and last_reset_at timestamp (for rolling 24h window).
+    
+    Args:
+        user_id: User ID (UUID string)
+    
+    Returns:
+        Usage: Updated usage record
+    
+    Raises:
+        HTTPException: If database operation fails
+    """
+    try:
+        supabase = _create_supabase_client()
+        
+        response = (
+            supabase.table("user_usage")
+            .update({
+                "message_count": 0,
+                "last_reset_at": "now()",
+            })
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usage record not found"
+            )
+        
+        logger.info(f"Reset usage for user {user_id}")
+        return Usage(**response.data[0])
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resetting usage: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reset usage: {str(e)}"
         )
 

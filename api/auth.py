@@ -5,6 +5,7 @@ Authentication router for user signup, login, logout, and user management
 from fastapi import APIRouter, HTTPException, Depends, status
 from models.astrology import SignupRequest, LoginRequest, AuthResponse, UserResponse
 from middleware.auth import get_current_user, get_supabase_client
+from services.subscription import initialize_free_tier_subscription
 from supabase import Client
 import logging
 
@@ -52,12 +53,24 @@ async def signup(
                 detail="Failed to create user account"
             )
         
-        logger.info(f"New user registered: {response.user.id}")
+        user_id = response.user.id
+        logger.info("New user registered: %s", user_id)
+        
+        # Initialize free tier subscription for new user
+        try:
+            initialize_free_tier_subscription(user_id)
+            logger.info("Free tier subscription initialized for user %s", user_id)
+        except HTTPException:
+            # Don't fail signup if subscription creation fails
+            logger.warning("Failed to initialize subscription for user %s", user_id)
+        except Exception as sub_error:
+            # Log other errors but don't fail signup - user can still use app
+            logger.error("Failed to initialize subscription for user %s: %s", user_id, str(sub_error))
         
         return AuthResponse(
             success=True,
             user=UserResponse(
-                id=response.user.id,
+                id=user_id,
                 email=response.user.email,
                 created_at=str(response.user.created_at) if hasattr(response.user, 'created_at') else None
             ),
@@ -69,11 +82,11 @@ async def signup(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Signup error: {str(e)}")
+        logger.error("Signup error: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Signup failed: {str(e)}"
-        )
+        ) from e
 
 
 @router.post(
@@ -112,7 +125,7 @@ async def login(
                 detail="Invalid email or password"
             )
         
-        logger.info(f"User logged in: {response.user.id}")
+        logger.info("User logged in: %s", response.user.id)
         
         return AuthResponse(
             success=True,
@@ -163,7 +176,7 @@ async def logout(
         # Sign out the user
         supabase.auth.sign_out()
         
-        logger.info(f"User logged out: {current_user['id']}")
+        logger.info("User logged out: %s", current_user['id'])
         
         return AuthResponse(
             success=True,
@@ -171,7 +184,7 @@ async def logout(
         )
         
     except Exception as e:
-        logger.error(f"Logout error: {str(e)}")
+        logger.error("Logout error: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Logout failed: {str(e)}"
@@ -236,7 +249,7 @@ async def refresh_token(
                 detail="Invalid refresh token"
             )
         
-        logger.info(f"Token refreshed for user: {response.user.id if response.user else 'unknown'}")
+        logger.info("Token refreshed for user: %s", response.user.id if response.user else 'unknown')
         
         return AuthResponse(
             success=True,
@@ -253,7 +266,7 @@ async def refresh_token(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Token refresh error: {str(e)}")
+        logger.error("Token refresh error: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Token refresh failed: {str(e)}"

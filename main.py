@@ -7,6 +7,8 @@ from api import (
     auth,
     websocket_router,
     conversation_router,
+    subscription_router,
+    webhook_router,
 )
 import os
 import logging
@@ -32,7 +34,7 @@ frontend_url = os.getenv("FRONTEND_URL")
 if frontend_url:
     allowed_origins.append(frontend_url)
 
-logger.info(f"Configured CORS for origins: {allowed_origins}")
+logger.info("Configured CORS for origins: %s", allowed_origins)
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,6 +58,12 @@ app.include_router(conversation_router.router)
 
 # WebSocket router for AI assistant chat
 app.include_router(websocket_router.router)
+
+# Subscription management endpoints
+app.include_router(subscription_router.router)
+
+# Stripe webhook endpoints
+app.include_router(webhook_router.router)
 
 @app.get("/")
 def read_root():
