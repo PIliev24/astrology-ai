@@ -8,8 +8,11 @@ import logging
 import httpx
 from typing import Dict, Any
 from fastapi import HTTPException, status
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 RAPIDAPI_HOST = "astrologer.p.rapidapi.com"

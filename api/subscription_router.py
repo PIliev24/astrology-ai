@@ -4,6 +4,7 @@ Handles subscription management, checkout, and usage tracking endpoints
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,7 +12,7 @@ from pydantic import BaseModel, HttpUrl
 import stripe
 
 from middleware.auth import get_current_user
-from models.subscription import PlanType, SubscriptionResponse, UsageResponse
+from models.subscription import PlanType, SubscriptionResponse, SubscriptionUpdate, UsageResponse
 from services.database import (
     get_or_create_user_subscription,
     get_user_subscription,
@@ -23,6 +24,7 @@ from services.subscription import (
     get_or_create_customer,
     create_checkout_session,
     cancel_subscription,
+    reactivate_subscription,
     get_stripe_price_id,
 )
 from services.usage_tracker import calculate_usage_stats
@@ -101,26 +103,23 @@ async def get_my_subscription(user: dict = Depends(get_current_user)):
     Returns subscription status including plan type, billing period, and Stripe IDs.
     """
     try:
-        user_id = user["sub"]
+        user_id = user["id"]
 
         # Get or create subscription (free tier by default)
         subscription = get_or_create_user_subscription(user_id)
 
         return SubscriptionResponse(
             id=subscription.id,
-            user_id=subscription.user_id,
             plan=subscription.status,
+            is_active=subscription.is_active,
             stripe_customer_id=subscription.stripe_customer_id,
             stripe_subscription_id=subscription.stripe_subscription_id,
-            stripe_price_id=subscription.stripe_price_id,
-            current_period_start=subscription.current_period_start,
             current_period_end=subscription.current_period_end,
-            cancel_at=subscription.cancel_at,
             created_at=subscription.created_at,
             updated_at=subscription.updated_at,
         )
     except Exception as e:
-        logger.error("Error fetching subscription for user %s: %s", user['sub'], str(e))
+        logger.error("Error fetching subscription for user %s: %s", user['id'], str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch subscription",
@@ -144,7 +143,7 @@ async def create_checkout(
     The user will be redirected to Stripe's hosted checkout page.
     """
     try:
-        user_id = user["sub"]
+        user_id = user["id"]
         user_email = user.get("email", "")
         user_name = user.get("name")
 
@@ -173,10 +172,75 @@ async def create_checkout(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error creating checkout for user %s: %s", user['sub'], str(e))
+        logger.error("Error creating checkout for user %s: %s", user['id'], str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create checkout session",
+        ) from e
+
+
+@router.post(
+    "/reactivate",
+    response_model=SubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Reactivate subscription",
+    description="Reactivate a cancelled subscription",
+)
+async def reactivate_user_subscription(
+    user: dict = Depends(get_current_user),
+):
+    """
+    Reactivate a cancelled subscription.
+    
+    If current_period_end is in the past, payment is required to start a new subscription.
+    If current_period_end is in the future, reactivates the subscription immediately.
+    """
+    try:
+        user_id = user["id"]
+
+        subscription = get_user_subscription(user_id)
+
+        if not subscription:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No subscription found",
+            )
+
+        if not subscription.stripe_subscription_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot reactivate free tier subscription",
+            )
+
+        await reactivate_subscription(subscription.stripe_subscription_id)
+
+        update_data = SubscriptionUpdate(
+            status=subscription.status, 
+            is_active=True,  
+            current_period_end=None
+        )
+        updated_subscription = update_user_subscription(user_id, update_data)
+
+        logger.info("Reactivated subscription for user %s", user_id)
+
+        return SubscriptionResponse(
+            id=updated_subscription.id,
+            plan=updated_subscription.status,
+            is_active=updated_subscription.is_active,
+            stripe_customer_id=updated_subscription.stripe_customer_id,
+            stripe_subscription_id=updated_subscription.stripe_subscription_id,
+            current_period_end=updated_subscription.current_period_end,
+            created_at=updated_subscription.created_at,
+            updated_at=updated_subscription.updated_at,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error reactivating subscription for user %s: %s", user['id'], str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reactivate subscription",
         ) from e
 
 
@@ -198,9 +262,7 @@ async def cancel_user_subscription(
     If at_period_end=False, cancellation is immediate.
     """
     try:
-        user_id = user["sub"]
-
-        # Get user's current subscription
+        user_id = user["id"]
         subscription = get_user_subscription(user_id)
 
         if not subscription:
@@ -216,30 +278,26 @@ async def cancel_user_subscription(
             )
 
         # Cancel in Stripe
-        stripe_data = cancel_subscription(
+        cancel_subscription(
             subscription.stripe_subscription_id,
             at_period_end=request.at_period_end,
         )
 
-        # Update local subscription record
-        update_data = {
-            "status": subscription.status,  # Keep current plan status
-            "cancel_at": stripe_data.get("cancel_at"),
-        }
+        update_data = SubscriptionUpdate(
+            status=subscription.status, 
+            is_active=False,  
+        )
         updated_subscription = update_user_subscription(user_id, update_data)
 
         logger.info("Canceled subscription for user %s", user_id)
 
         return SubscriptionResponse(
             id=updated_subscription.id,
-            user_id=updated_subscription.user_id,
             plan=updated_subscription.status,
+            is_active=updated_subscription.is_active,
             stripe_customer_id=updated_subscription.stripe_customer_id,
             stripe_subscription_id=updated_subscription.stripe_subscription_id,
-            stripe_price_id=updated_subscription.stripe_price_id,
-            current_period_start=updated_subscription.current_period_start,
             current_period_end=updated_subscription.current_period_end,
-            cancel_at=updated_subscription.cancel_at,
             created_at=updated_subscription.created_at,
             updated_at=updated_subscription.updated_at,
         )
@@ -247,7 +305,7 @@ async def cancel_user_subscription(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error canceling subscription for user %s: %s", user['sub'], str(e))
+        logger.error("Error canceling subscription for user %s: %s", user['id'], str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to cancel subscription",
@@ -274,7 +332,7 @@ async def get_usage(user: dict = Depends(get_current_user)):
     - time_until_reset: Time until rolling window resets
     """
     try:
-        user_id = user["sub"]
+        user_id = user["id"]
 
         # Get user's subscription and usage
         subscription = get_or_create_user_subscription(user_id)
@@ -283,19 +341,21 @@ async def get_usage(user: dict = Depends(get_current_user)):
         # Calculate comprehensive stats
         stats = calculate_usage_stats(usage, subscription.status)
 
+        # Calculate reset_at (24 hours after last_reset_at)
+        last_reset = usage.last_reset_at
+        reset_at = last_reset + timedelta(hours=24)
+
         return UsageResponse(
-            user_id=user_id,
             message_count=stats["message_count"],
-            limit=stats["limit"],
-            remaining=stats["remaining"],
-            percent_used=stats["percent_used"],
-            should_reset=stats["should_reset"],
-            time_until_reset=stats["time_until_reset"],
+            message_limit=stats["limit"],
+            messages_remaining=stats["remaining"],
             last_reset_at=usage.last_reset_at,
+            reset_at=reset_at,
+            plan=subscription.status,
         )
 
     except Exception as e:
-        logger.error("Error fetching usage for user %s: %s", user['sub'], str(e))
+        logger.error("Error fetching usage for user %s: %s", user['id'], str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch usage statistics",
@@ -316,7 +376,7 @@ async def track_message_usage(user: dict = Depends(get_current_user)):
     Used internally to track daily message quota.
     """
     try:
-        user_id = user["sub"]
+        user_id = user["id"]
 
         # Increment message count
         increment_user_message_count(user_id)
@@ -324,7 +384,7 @@ async def track_message_usage(user: dict = Depends(get_current_user)):
         logger.debug("Incremented message usage for user %s", user_id)
 
     except Exception as e:
-        logger.error("Error incrementing usage for user %s: %s", user['sub'], str(e))
+        logger.error("Error incrementing usage for user %s: %s", user['id'], str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to track usage",

@@ -6,10 +6,13 @@ Uses RapidAPI Hub - Astrologer for birth chart calculations
 import os
 import logging
 from typing import Dict, Any
+from dotenv import load_dotenv
 import httpx
 from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 RAPIDAPI_HOST = "astrologer.p.rapidapi.com"

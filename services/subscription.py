@@ -69,29 +69,24 @@ def get_or_create_customer(user_id: str, email: str, name: Optional[str] = None)
         customers = stripe.Customer.list(email=email, limit=1)
         
         if customers.data:
-            logger.info(f"Found existing Stripe customer {customers.data[0].id} for user {user_id}")
+            logger.info("Found existing Stripe customer %s for user %s", customers.data[0].id, user_id)
             return customers.data[0].id
         
-        # Create new customer
-        customer_data = {
-            "email": email,
-            "metadata": {"user_id": user_id},
-        }
-        
-        if name:
-            customer_data["name"] = name
-        
-        customer = stripe.Customer.create(**customer_data)
-        logger.info(f"Created Stripe customer {customer.id} for user {user_id}")
+        customer = stripe.Customer.create(
+            name=name or "",
+            email=email,
+        )
+
+        logger.info("Created Stripe customer %s for user %s", customer.id, user_id)
         
         return customer.id
     
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error creating/fetching customer: {str(e)}")
+    except stripe.error.StripeError as exc:
+        logger.error("Stripe error creating/fetching customer: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create Stripe customer: {str(e)}",
-        )
+            detail=f"Failed to create Stripe customer: {str(exc)}",
+        ) from exc
 
 
 def create_checkout_session(
@@ -142,24 +137,24 @@ def create_checkout_session(
         )
         
         logger.info(
-            f"Created Checkout session {session.id} for customer {customer_id} "
-            f"on plan {plan_type}"
+            "Created Checkout session %s for customer %s on plan %s",
+            session.id, customer_id, plan_type
         )
         
         return session.url
     
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error creating checkout session: {str(e)}")
+    except stripe.error.StripeError as exc:
+        logger.error("Stripe error creating checkout session: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create checkout session: {str(e)}",
-        )
-    except ValueError as e:
-        logger.error(f"Invalid checkout request: {str(e)}")
+            detail=f"Failed to create checkout session: {str(exc)}",
+        ) from exc
+    except ValueError as exc:
+        logger.error("Invalid checkout request: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+            detail=str(exc),
+        ) from exc
 
 
 def get_subscription_from_stripe(subscription_id: str) -> dict:
@@ -176,32 +171,43 @@ def get_subscription_from_stripe(subscription_id: str) -> dict:
         HTTPException: If subscription not found or API fails
     """
     try:
-        subscription = stripe.Subscription.retrieve(subscription_id)
+        # Expand items to get price information
+        subscription = stripe.Subscription.retrieve(
+            subscription_id,
+            expand=["items.data.price"]
+        )
+        
+        # Get price_id from items
+        price_id = None
+        if subscription.items and hasattr(subscription.items, 'data') and subscription.items.data:
+            price_id = subscription.items.data[0].price.id if subscription.items.data[0].price else None
+        
         return {
             "id": subscription.id,
             "customer_id": subscription.customer,
             "status": subscription.status,
-            "price_id": subscription.items.data[0].price.id if subscription.items.data else None,
+            "price_id": price_id,
             "current_period_start": subscription.current_period_start,
             "current_period_end": subscription.current_period_end,
             "cancel_at": subscription.cancel_at,
             "canceled_at": subscription.canceled_at,
+            "metadata": subscription.metadata or {},
         }
-    except stripe.error.InvalidRequestError:
-        logger.error(f"Stripe subscription {subscription_id} not found")
+    except stripe.error.InvalidRequestError as exc:
+        logger.error("Stripe subscription %s not found", subscription_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Subscription not found",
-        )
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error fetching subscription: {str(e)}")
+        ) from exc
+    except stripe.error.StripeError as exc:
+        logger.error("Stripe error fetching subscription: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch subscription: {str(e)}",
-        )
+            detail=f"Failed to fetch subscription: {str(exc)}",
+        ) from exc
 
 
-def cancel_subscription(subscription_id: str, at_period_end: bool = True) -> dict:
+def cancel_subscription(subscription_id: str, at_period_end: bool = True):
     """
     Cancel a Stripe subscription.
     
@@ -210,41 +216,71 @@ def cancel_subscription(subscription_id: str, at_period_end: bool = True) -> dic
         at_period_end: If True, cancel at period end; if False, cancel immediately
     
     Returns:
-        Updated subscription data
+        None
     
     Raises:
         HTTPException: If cancellation fails
     """
     try:
         if at_period_end:
-            subscription = stripe.Subscription.modify(
+            stripe.Subscription.modify(
                 subscription_id,
                 cancel_at_period_end=True,
             )
-            logger.info(f"Scheduled cancellation for subscription {subscription_id} at period end")
+            logger.info("Scheduled cancellation at period end for subscription %s", subscription_id)
         else:
-            subscription = stripe.Subscription.delete(subscription_id)
-            logger.info(f"Immediately canceled subscription {subscription_id}")
-        
-        return {
-            "id": subscription.id,
-            "status": subscription.status,
-            "cancel_at": subscription.cancel_at,
-            "canceled_at": subscription.canceled_at,
-        }
+            stripe.Subscription.delete(subscription_id)
+            logger.info("Immediately canceled subscription %s", subscription_id)
     
-    except stripe.error.InvalidRequestError:
-        logger.error(f"Stripe subscription {subscription_id} not found for cancellation")
+    except stripe.error.InvalidRequestError as exc:
+        logger.error("Stripe subscription %s not found", subscription_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Subscription not found",
-        )
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error canceling subscription: {str(e)}")
+        ) from exc
+    except stripe.error.StripeError as exc:
+        logger.error("Stripe error canceling subscription %s: %s", subscription_id, str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to cancel subscription: {str(e)}",
+            detail=f"Failed to cancel subscription: {str(exc)}",
+        ) from exc
+
+
+async def reactivate_subscription(subscription_id: str):
+    """
+    Reactivate a cancelled Stripe subscription by removing the cancellation.
+    
+    Sets cancel_at_period_end to False in Stripe, which removes the scheduled cancellation.
+    The router will handle updating is_active in the database.
+    
+    Args:
+        subscription_id: Stripe subscription ID
+    
+    Raises:
+        HTTPException: If reactivation fails
+    """
+    try:
+        # Remove cancellation by setting cancel_at_period_end to False
+        stripe.Subscription.modify(
+            subscription_id,
+            cancel_at_period_end=False,
+            cancel_at=None,
         )
+        
+        logger.info("Reactivated subscription %s in Stripe", subscription_id)
+    
+    except stripe.error.InvalidRequestError as exc:
+        logger.error("Stripe subscription %s not found for reactivation", subscription_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subscription not found",
+        ) from exc
+    except stripe.error.StripeError as exc:
+        logger.error("Stripe error reactivating subscription: %s", str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reactivate subscription: {str(exc)}",
+        ) from exc
 
 
 def determine_plan_from_price_id(price_id: str) -> PlanType:
@@ -310,18 +346,18 @@ def verify_webhook_signature(payload: bytes, signature: str, webhook_secret: str
     try:
         event = stripe.Webhook.construct_event(payload, signature, webhook_secret)
         return event
-    except ValueError:
+    except ValueError as exc:
         logger.error("Invalid webhook payload")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid webhook payload",
-        )
-    except stripe.error.SignatureVerificationError:
+        ) from exc
+    except stripe.error.SignatureVerificationError as exc:
         logger.error("Invalid webhook signature")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid webhook signature",
-        )
+        ) from exc
 
 
 def handle_checkout_session_completed(session_data: dict) -> dict:

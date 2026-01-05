@@ -4,13 +4,14 @@ Handles all CRUD operations for user birth charts, aspects, relationships, and c
 """
 
 import os
+from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
 import logging
 
 from supabase import create_client, Client
 from fastapi import HTTPException, status
-
+from dotenv import load_dotenv
 from models.database import (
     UserBirthChart,
     UserBirthChartCreate,
@@ -31,6 +32,8 @@ from models.subscription import (
 )
 
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 # Supabase configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -109,12 +112,12 @@ def save_birth_chart(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error saving birth chart: {str(e)}")
+    except Exception as exc:
+        logger.error("Error saving birth chart: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save birth chart: {str(e)}"
-        )
+            detail=f"Failed to save birth chart: {str(exc)}"
+        ) from exc
 
 
 def get_user_birth_charts(
@@ -159,12 +162,12 @@ def get_user_birth_charts(
             for item in response.data
         ]
     
-    except Exception as e:
-        logger.error(f"Error fetching user birth charts: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching user birth charts: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch birth charts: {str(e)}"
-        )
+            detail=f"Failed to fetch birth charts: {str(exc)}"
+        ) from exc
 
 
 def get_birth_chart_by_id(
@@ -206,12 +209,19 @@ def get_birth_chart_by_id(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching birth chart: {str(e)}")
+    except Exception as exc:
+        # Check if it's a Supabase "no rows" error (PGRST116)
+        error_str = str(exc)
+        if "PGRST116" in error_str or "Cannot coerce the result to a single JSON object" in error_str:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Birth chart not found"
+            ) from exc
+        logger.error("Error fetching birth chart: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch birth chart: {str(e)}"
-        )
+            detail=f"Failed to fetch birth chart: {str(exc)}"
+        ) from exc
 
 
 def get_birth_data_by_chart_ids(
@@ -271,12 +281,12 @@ def get_birth_data_by_chart_ids(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching birth data: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching birth data: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch birth data: {str(e)}"
-        )
+            detail=f"Failed to fetch birth data: {str(exc)}"
+        ) from exc
 
 
 def update_birth_chart(
@@ -332,12 +342,12 @@ def update_birth_chart(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error updating birth chart: {str(e)}")
+    except Exception as exc:
+        logger.error("Error updating birth chart: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update birth chart: {str(e)}"
-        )
+            detail=f"Failed to update birth chart: {str(exc)}"
+        ) from exc
 
 
 def delete_birth_chart(
@@ -363,14 +373,14 @@ def delete_birth_chart(
             .eq("user_id", user_id) \
             .execute()
         
-        logger.info(f"Birth chart {chart_id} deleted for user {user_id}")
+        logger.info("Birth chart %s deleted for user %s", chart_id, user_id)
     
-    except Exception as e:
-        logger.error(f"Error deleting birth chart: {str(e)}")
+    except Exception as exc:
+        logger.error("Error deleting birth chart: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete birth chart: {str(e)}"
-        )
+            detail=f"Failed to delete birth chart: {str(exc)}"
+        ) from exc
 
 
 # ============================================================================
@@ -416,12 +426,12 @@ def save_conversation(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error creating conversation: {str(e)}")
+    except Exception as exc:
+        logger.error("Error creating conversation: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create conversation: {str(e)}"
-        )
+            detail=f"Failed to create conversation: {str(exc)}"
+        ) from exc
 
 
 def get_user_conversations(
@@ -466,12 +476,12 @@ def get_user_conversations(
         
         return conversations
     
-    except Exception as e:
-        logger.error(f"Error fetching conversations: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching conversations: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch conversations: {str(e)}"
-        )
+            detail=f"Failed to fetch conversations: {str(exc)}"
+        ) from exc
 
 
 def get_conversation_by_id(
@@ -513,12 +523,19 @@ def get_conversation_by_id(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching conversation: {str(e)}")
+    except Exception as exc:
+        # Check if it's a Supabase "no rows" error (PGRST116)
+        error_str = str(exc)
+        if "PGRST116" in error_str or "Cannot coerce the result to a single JSON object" in error_str:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found"
+            ) from exc
+        logger.error("Error fetching conversation: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch conversation: {str(e)}"
-        )
+            detail=f"Failed to fetch conversation: {str(exc)}"
+        ) from exc
 
 
 def update_conversation(
@@ -568,12 +585,12 @@ def update_conversation(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error updating conversation: {str(e)}")
+    except Exception as exc:
+        logger.error("Error updating conversation: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update conversation: {str(e)}"
-        )
+            detail=f"Failed to update conversation: {str(exc)}"
+        ) from exc
 
 
 def delete_conversation(
@@ -600,14 +617,14 @@ def delete_conversation(
             .eq("user_id", user_id) \
             .execute()
         
-        logger.info(f"Conversation {conversation_id} deleted for user {user_id}")
+        logger.info("Conversation %s deleted for user %s", conversation_id, user_id)
     
-    except Exception as e:
-        logger.error(f"Error deleting conversation: {str(e)}")
+    except Exception as exc:
+        logger.error("Error deleting conversation: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete conversation: {str(e)}"
-        )
+            detail=f"Failed to delete conversation: {str(exc)}"
+        ) from exc
 
 
 # ============================================================================
@@ -653,12 +670,12 @@ def save_message(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error saving message: {str(e)}")
+    except Exception as exc:
+        logger.error("Error saving message: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save message: {str(e)}"
-        )
+            detail=f"Failed to save message: {str(exc)}"
+        ) from exc
 
 
 def get_conversation_history(
@@ -695,12 +712,12 @@ def get_conversation_history(
         
         return [ChatMessage(**item) for item in response.data]
     
-    except Exception as e:
-        logger.error(f"Error fetching conversation history: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching conversation history: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch conversation history: {str(e)}"
-        )
+            detail=f"Failed to fetch conversation history: {str(exc)}"
+        ) from exc
 
 
 def get_conversation_with_messages(
@@ -733,12 +750,12 @@ def get_conversation_with_messages(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching conversation with messages: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching conversation with messages: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch conversation: {str(e)}"
-        )
+            detail=f"Failed to fetch conversation: {str(exc)}"
+        ) from exc
 
 
 # ============================================================================
@@ -785,16 +802,16 @@ def link_conversation_to_charts(
         if links_to_create:
             supabase.table("conversation_birth_charts").insert(links_to_create).execute()
         
-        logger.info(f"Linked conversation {conversation_id} to {len(links_to_create)} birth charts")
+        logger.info("Linked conversation %s to %d birth charts", conversation_id, len(links_to_create))
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error linking conversation to charts: {str(e)}")
+    except Exception as exc:
+        logger.error("Error linking conversation to charts: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to link conversation to charts: {str(e)}"
-        )
+            detail=f"Failed to link conversation to charts: {str(exc)}"
+        ) from exc
 
 
 def get_conversations_by_chart_id(
@@ -855,12 +872,12 @@ def get_conversations_by_chart_id(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching conversations by chart ID: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching conversations by chart ID: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch conversations: {str(e)}"
-        )
+            detail=f"Failed to fetch conversations: {str(exc)}"
+        ) from exc
 
 
 def get_conversation_chart_ids(
@@ -897,12 +914,12 @@ def get_conversation_chart_ids(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching conversation chart IDs: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching conversation chart IDs: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch chart IDs: {str(e)}"
-        )
+            detail=f"Failed to fetch chart IDs: {str(exc)}"
+        ) from exc
 
 
 def get_conversation_with_charts(
@@ -933,12 +950,12 @@ def get_conversation_with_charts(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching conversation with charts: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching conversation with charts: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch conversation: {str(e)}"
-        )
+            detail=f"Failed to fetch conversation: {str(exc)}"
+        ) from exc
 
 
 def get_chart_with_conversations(
@@ -975,12 +992,12 @@ def get_chart_with_conversations(
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching chart with conversations: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching chart with conversations: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch chart with conversations: {str(e)}"
-        )
+            detail=f"Failed to fetch chart with conversations: {str(exc)}"
+        ) from exc
 
 
 # ============================================================================
@@ -1012,12 +1029,13 @@ def get_or_create_user_subscription(
             supabase.table("user_subscriptions")
             .select("*")
             .eq("user_id", user_id)
-            .single()
             .execute()
         )
         
-        if response.data:
-            return Subscription(**response.data)
+        # Check if subscription exists
+        if response.data and len(response.data) > 0:
+            data = response.data[0]
+            return Subscription(**data)
         
         # Create new free tier subscription
         # Use provided customer ID or generate placeholder for free tier
@@ -1027,7 +1045,7 @@ def get_or_create_user_subscription(
             "user_id": user_id,
             "stripe_customer_id": customer_id,
             "status": "free",
-            "billing_status": "active",
+            "is_active": True,
         }
         
         create_response = supabase.table("user_subscriptions").insert(data).execute()
@@ -1038,17 +1056,17 @@ def get_or_create_user_subscription(
                 detail="Failed to create subscription"
             )
         
-        logger.info(f"Created free tier subscription for user {user_id}")
+        logger.info("Created free tier subscription for user %s", user_id)
         return Subscription(**create_response.data[0])
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error getting or creating subscription: {str(e)}")
+    except Exception as exc:
+        logger.error("Error getting or creating subscription: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get or create subscription: {str(e)}"
-        )
+            detail=f"Failed to get or create subscription: {str(exc)}"
+        ) from exc
 
 
 def get_user_subscription(user_id: str) -> Subscription:
@@ -1085,12 +1103,60 @@ def get_user_subscription(user_id: str) -> Subscription:
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching subscription: {str(e)}")
+    except Exception as exc:
+        # Check if it's a Supabase "no rows" error (PGRST116)
+        error_str = str(exc)
+        if "PGRST116" in error_str or "Cannot coerce the result to a single JSON object" in error_str:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription not found"
+            ) from exc
+        logger.error("Error fetching subscription: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch subscription: {str(e)}"
+            detail=f"Failed to fetch subscription: {str(exc)}"
+        ) from exc
+
+
+def get_user_subscription_by_stripe_id(stripe_subscription_id: str) -> Optional[Subscription]:
+    """
+    Get subscription by Stripe subscription ID.
+    
+    Args:
+        stripe_subscription_id: Stripe subscription ID
+    
+    Returns:
+        Subscription if found, None otherwise
+    
+    Raises:
+        HTTPException: If database operation fails
+    """
+    try:
+        supabase = _create_supabase_client()
+        
+        response = (
+            supabase.table("user_subscriptions")
+            .select("*")
+            .eq("stripe_subscription_id", stripe_subscription_id)
+            .single()
+            .execute()
         )
+        
+        if not response.data:
+            return None
+        
+        return Subscription(**response.data)
+    
+    except Exception as exc:
+        # Check if it's a "no rows" error
+        error_str = str(exc)
+        if "PGRST116" in error_str or "Cannot coerce the result to a single JSON object" in error_str:
+            return None
+        logger.error("Error fetching subscription by Stripe ID: %s", str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch subscription: {str(exc)}"
+        ) from exc
 
 
 def update_user_subscription(
@@ -1120,17 +1186,18 @@ def update_user_subscription(
         if update_data.stripe_price_id is not None:
             update_dict["stripe_price_id"] = update_data.stripe_price_id
         if update_data.status is not None:
-            update_dict["status"] = update_data.status
-        if update_data.billing_status is not None:
-            update_dict["billing_status"] = update_data.billing_status
-        if update_data.current_period_start is not None:
-            update_dict["current_period_start"] = update_data.current_period_start
+            status_value = update_data.status.value if hasattr(update_data.status, 'value') else update_data.status
+            update_dict["status"] = status_value
+        if update_data.is_active is not None:
+            update_dict["is_active"] = update_data.is_active
         if update_data.current_period_end is not None:
-            update_dict["current_period_end"] = update_data.current_period_end
-        if update_data.cancel_at is not None:
-            update_dict["cancel_at"] = update_data.cancel_at
-        if update_data.canceled_at is not None:
-            update_dict["canceled_at"] = update_data.canceled_at
+            # Convert datetime to ISO format string for Supabase
+            if isinstance(update_data.current_period_end, datetime):
+                update_dict["current_period_end"] = update_data.current_period_end.isoformat()
+            else:
+                update_dict["current_period_end"] = update_data.current_period_end
+        elif update_data.current_period_end is None:
+            update_dict["current_period_end"] = None
         
         if not update_dict:
             # No fields to update, return existing subscription
@@ -1152,17 +1219,17 @@ def update_user_subscription(
                 detail="Subscription not found"
             )
         
-        logger.info(f"Updated subscription for user {user_id}")
+        logger.info("Updated subscription for user %s", user_id)
         return Subscription(**response.data[0])
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error updating subscription: {str(e)}")
+    except Exception as exc:
+        logger.error("Error updating subscription: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update subscription: {str(e)}"
-        )
+            detail=f"Failed to update subscription: {str(exc)}"
+        ) from exc
 
 
 # ============================================================================
@@ -1189,24 +1256,24 @@ def get_user_usage(user_id: str) -> Usage:
             supabase.table("user_usage")
             .select("*")
             .eq("user_id", user_id)
-            .single()
             .execute()
         )
         
-        if not response.data:
+        # Check if usage record exists
+        if not response.data or len(response.data) == 0:
             # Create new usage record if it doesn't exist
             return create_user_usage(user_id)
         
-        return Usage(**response.data)
+        return Usage(**response.data[0])
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error fetching usage: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching usage: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch usage: {str(e)}"
-        )
+            detail=f"Failed to fetch usage: {str(exc)}"
+        ) from exc
 
 
 def create_user_usage(user_id: str) -> Usage:
@@ -1239,22 +1306,23 @@ def create_user_usage(user_id: str) -> Usage:
                 detail="Failed to create usage record"
             )
         
-        logger.info(f"Created usage record for user {user_id}")
+        logger.info("Created usage record for user %s", user_id)
         return Usage(**response.data[0])
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error creating usage record: {str(e)}")
+    except Exception as exc:
+        logger.error("Error creating usage record: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create usage record: {str(e)}"
-        )
+            detail=f"Failed to create usage record: {str(exc)}"
+        ) from exc
 
 
 def increment_user_message_count(user_id: str) -> Usage:
     """
     Increment user's message count by 1.
+    Uses fetch-increment-update pattern for atomic operation.
     
     Args:
         user_id: User ID (UUID string)
@@ -1268,29 +1336,38 @@ def increment_user_message_count(user_id: str) -> Usage:
     try:
         supabase = _create_supabase_client()
         
-        # Increment by 1
+        # Fetch current usage (or create if doesn't exist)
+        current_usage = get_user_usage(user_id)
+        
+        # Increment message count
+        new_count = current_usage.message_count + 1
+        
+        # Update with new count
         response = (
             supabase.table("user_usage")
-            .update({"message_count": "message_count + 1"})
+            .update({"message_count": new_count})
             .eq("user_id", user_id)
             .execute()
         )
         
         if not response.data:
-            # Create if doesn't exist and increment
-            create_user_usage(user_id)
-            return increment_user_message_count(user_id)
+            logger.error("Failed to update usage for user %s - no data returned", user_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to increment message count - update returned no data"
+            )
         
+        logger.debug("Incremented message count for user %s: %d -> %d", user_id, current_usage.message_count, new_count)
         return Usage(**response.data[0])
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error incrementing message count: {str(e)}")
+    except Exception as exc:
+        logger.error("Error incrementing message count for user %s: %s", user_id, str(exc), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to increment message count: {str(e)}"
-        )
+            detail=f"Failed to increment message count: {str(exc)}"
+        ) from exc
 
 
 def reset_user_usage(user_id: str) -> Usage:
@@ -1325,15 +1402,15 @@ def reset_user_usage(user_id: str) -> Usage:
                 detail="Usage record not found"
             )
         
-        logger.info(f"Reset usage for user {user_id}")
+        logger.info("Reset usage for user %s", user_id)
         return Usage(**response.data[0])
     
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error resetting usage: {str(e)}")
+    except Exception as exc:
+        logger.error("Error resetting usage: %s", str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to reset usage: {str(e)}"
-        )
+            detail=f"Failed to reset usage: {str(exc)}"
+        ) from exc
 

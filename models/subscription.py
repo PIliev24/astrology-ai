@@ -36,11 +36,8 @@ class SubscriptionBase(BaseModel):
     stripe_subscription_id: Optional[str] = None
     stripe_price_id: Optional[str] = None
     status: PlanType = PlanType.FREE
-    billing_status: SubscriptionStatus = SubscriptionStatus.ACTIVE
-    current_period_start: Optional[datetime] = None
+    is_active: bool = True
     current_period_end: Optional[datetime] = None
-    cancel_at: Optional[datetime] = None
-    canceled_at: Optional[datetime] = None
 
 
 class SubscriptionCreate(SubscriptionBase):
@@ -55,11 +52,8 @@ class SubscriptionUpdate(BaseModel):
     stripe_subscription_id: Optional[str] = None
     stripe_price_id: Optional[str] = None
     status: Optional[PlanType] = None
-    billing_status: Optional[SubscriptionStatus] = None
-    current_period_start: Optional[datetime] = None
+    is_active: Optional[bool] = None
     current_period_end: Optional[datetime] = None
-    cancel_at: Optional[datetime] = None
-    canceled_at: Optional[datetime] = None
 
 
 class Subscription(SubscriptionBase):
@@ -79,12 +73,10 @@ class SubscriptionResponse(BaseModel):
 
     id: UUID
     plan: PlanType
-    billing_status: SubscriptionStatus
+    is_active: bool
     stripe_customer_id: str
     stripe_subscription_id: Optional[str] = None
-    current_period_start: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
-    canceled_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -121,8 +113,8 @@ class UsageResponse(BaseModel):
     """Usage response for API endpoints."""
 
     message_count: int = Field(description="Messages used in current 24h window")
-    message_limit: int = Field(description="Total allowed messages (based on plan)")
-    messages_remaining: int = Field(description="Messages remaining in 24h window")
+    message_limit: Optional[int] = Field(description="Total allowed messages (based on plan, None for unlimited)")
+    messages_remaining: Optional[int] = Field(description="Messages remaining in 24h window (None for unlimited)")
     last_reset_at: datetime = Field(description="When the current window started")
     reset_at: datetime = Field(description="When the window will reset")
     plan: PlanType = Field(description="Current subscription plan")

@@ -104,7 +104,15 @@ def get_messages_until_reset(usage: Usage) -> timedelta:
     Returns:
         Timedelta until reset (0 if already reset)
     """
-    reset_time = usage.last_reset_at + timedelta(hours=24)
+    if usage.last_reset_at is None:
+        return timedelta(0)
+    
+    # Ensure last_reset_at is timezone-aware
+    last_reset = usage.last_reset_at
+    if last_reset.tzinfo is None:
+        last_reset = last_reset.replace(tzinfo=timezone.utc)
+    
+    reset_time = last_reset + timedelta(hours=24)
     now = datetime.now(timezone.utc)
     
     time_until_reset = reset_time - now

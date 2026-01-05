@@ -28,6 +28,7 @@ from services.database import (
 )
 from utils.token_monitor import default_monitor
 from supabase import create_client
+from dotenv import load_dotenv
 import os
 from models.ai import (
     ChatMessageRequest,
@@ -40,7 +41,6 @@ from models.database import ChatConversationCreate, ChatMessageCreate, ChatConve
 from models.subscription import PlanType
 from services.usage_tracker import (
     can_send_message,
-    is_message_limit_exceeded,
     get_remaining_messages,
     get_messages_until_reset,
     should_reset_daily_usage,
@@ -49,7 +49,7 @@ from services.usage_tracker import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ws", tags=["WebSocket"])
-
+load_dotenv()
 
 async def authenticate_websocket(websocket: WebSocket, token: Optional[str] = None) -> dict:
     """
