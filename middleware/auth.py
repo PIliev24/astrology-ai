@@ -62,7 +62,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             )
         
         user = user_response.user
-        logger.info(f"User authenticated: {user.id}")
+        logger.info("User authenticated: %s", user.id)
         
         return {
             "id": user.id,
@@ -73,12 +73,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Token verification failed: {str(e)}")
+        logger.error("Token verification failed: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Could not validate credentials: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from e
 
 
 async def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False))) -> Optional[dict]:

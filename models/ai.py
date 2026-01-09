@@ -2,9 +2,9 @@
 Pydantic models for AI/chat WebSocket communication
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, Literal
 from uuid import UUID
+from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, Field
 
 
 class ChatMessageRequest(BaseModel):

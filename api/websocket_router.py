@@ -21,9 +21,14 @@ from services.database import (
     link_conversation_to_charts,
     get_conversation_history,
     update_conversation,
+    get_or_create_user_subscription,
+    get_user_usage,
+    increment_user_message_count,
+    reset_user_usage,
 )
 from utils.token_monitor import default_monitor
 from supabase import create_client
+from dotenv import load_dotenv
 import os
 from models.ai import (
     ChatMessageRequest,
@@ -33,11 +38,18 @@ from models.ai import (
     ToolCallMetadata,
 )
 from models.database import ChatConversationCreate, ChatMessageCreate, ChatConversationUpdate
+from models.subscription import PlanType
+from services.usage_tracker import (
+    can_send_message,
+    get_remaining_messages,
+    get_messages_until_reset,
+    should_reset_daily_usage,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ws", tags=["WebSocket"])
-
+load_dotenv()
 
 async def authenticate_websocket(websocket: WebSocket, token: Optional[str] = None) -> dict:
     """
@@ -82,7 +94,7 @@ async def authenticate_websocket(websocket: WebSocket, token: Optional[str] = No
             )
         
         user = user_response.user
-        logger.info(f"WebSocket authenticated: {user.id}")
+        logger.info("WebSocket authenticated: %s", user.id)
         
         return {
             "id": user.id,
@@ -92,12 +104,12 @@ async def authenticate_websocket(websocket: WebSocket, token: Optional[str] = No
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"WebSocket authentication failed: {str(e)}")
+        logger.error("WebSocket authentication failed: %s", str(e))
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Authentication failed: {str(e)}"
-        )
+        ) from e
 
 
 @router.websocket("/chat")
@@ -159,6 +171,57 @@ async def websocket_chat(
                     error_response = ErrorResponse(
                         type="error",
                         error=f"Invalid message format: {str(e)}",
+                    )
+                    await websocket.send_json(error_response.model_dump(mode='json'))
+                    continue
+                
+                # Check subscription and usage limits
+                try:
+                    # Get user's subscription
+                    subscription = get_or_create_user_subscription(user_id)
+                    plan_type = PlanType(subscription.status)
+                    
+                    # Get user's current usage
+                    usage = get_user_usage(user_id)
+                    
+                    # Reset usage if 24 hours have passed
+                    if should_reset_daily_usage(usage):
+                        usage = reset_user_usage(user_id)
+                    
+                    # Check if user can send message
+                    if not can_send_message(usage, plan_type):
+                        remaining = get_remaining_messages(usage, plan_type)
+                        time_until_reset = get_messages_until_reset(usage)
+                        hours_until_reset = int(time_until_reset.total_seconds() / 3600)
+                        
+                        error_response = ErrorResponse(
+                            type="error",
+                            error="message_limit_exceeded",
+                            message=f"Daily message limit reached for {plan_type.value} plan. Limit: {plan_type.value}. "
+                                   f"Reset in {hours_until_reset} hours. Consider upgrading to Pro for unlimited messages.",
+                        )
+                        await websocket.send_json(error_response.model_dump(mode='json'))
+                        logger.info(f"User {user_id} exceeded message limit on {plan_type.value} plan")
+                        continue
+                
+                except ValueError as e:
+                    # Invalid plan type
+                    logger.error(f"Invalid plan type for user {user_id}: {str(e)}")
+                    error_response = ErrorResponse(
+                        type="error",
+                        error="invalid_subscription",
+                        message="Subscription status is invalid. Please contact support.",
+                    )
+                    await websocket.send_json(error_response.model_dump(mode='json'))
+                    continue
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logger.error("Error checking subscription limits for user %s: %s", user_id, str(e))
+                    error_response = ErrorResponse(
+                        type="error",
+                        error="subscription_check_failed",
+                        message="Failed to verify subscription limits. Please try again.",
                     )
                     await websocket.send_json(error_response.model_dump(mode='json'))
                     continue
@@ -233,20 +296,23 @@ async def websocket_chat(
                             message_request.chart_references,
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to link conversation to charts: {str(e)}")
+                        logger.warning("Failed to link conversation to charts: %s", str(e))
                         # Don't fail the request if linking fails
                 
-                # Save user message to database
-                save_message(
-                    ChatMessageCreate(
-                        conversation_id=current_conversation_id,
-                        role="user",
-                        content=message_request.content,
-                        metadata={
-                            "chart_references": message_request.chart_references or [],
-                        } if message_request.chart_references else None,
-                    ),
-                )
+                # Save user message to database only for Basic and Pro plans
+                should_save_messages = plan_type in [PlanType.BASIC, PlanType.PRO]
+                
+                if should_save_messages:
+                    save_message(
+                        ChatMessageCreate(
+                            conversation_id=current_conversation_id,
+                            role="user",
+                            content=message_request.content,
+                            metadata={
+                                "chart_references": message_request.chart_references or [],
+                            } if message_request.chart_references else None,
+                        ),
+                    )
                 
                 # Prepare user input - append chart_references info if present
                 # Note: Conversation history is handled automatically by the agents library
@@ -269,7 +335,7 @@ async def websocket_chat(
                     ).model_dump())
                     continue
                 elif message:
-                    logger.info(f"Token usage warning: {message}")
+                    logger.info("Token usage warning: %s", message)
                 
                 # Track tool calls for metadata
                 tool_calls_metadata: list[ToolCallMetadata] = []
@@ -341,7 +407,7 @@ async def websocket_chat(
                     # Check token usage on response
                     within_limit, token_count, message = default_monitor.check_limit(final_output)
                     if not within_limit:
-                        logger.warning(f"Response exceeded token limit: {token_count}")
+                        logger.warning("Response exceeded token limit: %s", token_count)
                         # Truncate response if needed
                         final_output = default_monitor.truncate_content(
                             final_output, 
@@ -349,26 +415,35 @@ async def websocket_chat(
                         )
                         final_output += "\n\n[Response truncated due to size limits. Please ask more specific questions.]"
                     elif message:
-                        logger.info(f"Response token usage warning: {message}")
+                        logger.info("Response token usage warning: %s", message)
                     
-                    # Save assistant message to database
-                    save_message(
-                        ChatMessageCreate(
-                            conversation_id=current_conversation_id,
-                            role="assistant",
-                            content=final_output,
-                            metadata={
-                                "tool_calls": [
-                                    {
-                                        "tool_name": tc.tool_name,
-                                        "success": tc.success,
-                                    }
-                                    for tc in tool_calls_metadata
-                                ],
-                                "chart_references": message_request.chart_references or [],
-                            } if tool_calls_metadata or message_request.chart_references else None,
-                        ),
-                    )
+                    # Save assistant message to database only for Basic and Pro plans
+                    if should_save_messages:
+                        save_message(
+                            ChatMessageCreate(
+                                conversation_id=current_conversation_id,
+                                role="assistant",
+                                content=final_output,
+                                metadata={
+                                    "tool_calls": [
+                                        {
+                                            "tool_name": tc.tool_name,
+                                            "success": tc.success,
+                                        }
+                                        for tc in tool_calls_metadata
+                                    ],
+                                    "chart_references": message_request.chart_references or [],
+                                } if tool_calls_metadata or message_request.chart_references else None,
+                            ),
+                        )
+                    
+                    # Increment message usage count after successful response
+                    try:
+                        increment_user_message_count(user_id)
+                        logger.debug("Incremented message count for user %s", user_id)
+                    except Exception as e:
+                        logger.error("Failed to increment message usage for user %s: %s", user_id, str(e))
+                        # Don't fail the request if usage tracking fails
                     
                     # Send final response
                     response = ChatMessageResponse(
@@ -382,7 +457,7 @@ async def websocket_chat(
                     await websocket.send_json(response.model_dump(mode='json'))
                 
                 except Exception as e:
-                    logger.error(f"Error running agent: {str(e)}")
+                    logger.error("Error running agent: %s", str(e))
                     error_response = ErrorResponse(
                         type="error",
                         error=f"Failed to process message: {str(e)}",
@@ -390,7 +465,7 @@ async def websocket_chat(
                     await websocket.send_json(error_response.model_dump(mode='json'))
             
             except WebSocketDisconnect:
-                logger.info(f"WebSocket disconnected for user {user_id}")
+                logger.info("WebSocket disconnected for user %s", user_id)
                 break
             
             except json.JSONDecodeError:
@@ -401,7 +476,7 @@ async def websocket_chat(
                 await websocket.send_json(error_response.model_dump())
             
             except Exception as e:
-                logger.error(f"Error in WebSocket message loop: {str(e)}")
+                logger.error("Error in WebSocket message loop: %s", str(e))
                 error_response = ErrorResponse(
                     type="error",
                     error=f"Unexpected error: {str(e)}",
@@ -412,9 +487,9 @@ async def websocket_chat(
         logger.info("WebSocket disconnected")
     
     except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
+        logger.error("WebSocket error: %s", str(e))
         try:
             await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
-        except:
+        except Exception:
             pass
 

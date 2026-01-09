@@ -1,15 +1,19 @@
-from dotenv import load_dotenv
+import logging
+
 from fastapi import FastAPI
-import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+
+from config.settings import get_settings
+from core.error_handlers import register_exception_handlers
 from api import (
     birth_chart_router,
     auth,
     websocket_router,
     conversation_router,
+    subscription_router,
+    webhook_router,
 )
-import os
-import logging
 
 # Configure logging
 logging.basicConfig(
@@ -18,21 +22,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
-load_dotenv()
+# Load and validate settings at startup
+settings = get_settings()
 
-# Allow your frontend domain in production + localhost for development
-allowed_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+# Create FastAPI app
+app = FastAPI(
+    title="Astrology API",
+    description="AI-powered astrology API with birth chart calculations and chat",
+    version="1.0.0",
+)
 
-# Add your production frontend URL if you have one
-frontend_url = os.getenv("FRONTEND_URL")
-if frontend_url:
-    allowed_origins.append(frontend_url)
+# Register custom exception handlers
+register_exception_handlers(app)
 
-logger.info(f"Configured CORS for origins: {allowed_origins}")
+# Configure CORS from settings
+allowed_origins = settings.cors_origins
+logger.info("Configured CORS for origins: %s", allowed_origins)
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,6 +61,12 @@ app.include_router(conversation_router.router)
 
 # WebSocket router for AI assistant chat
 app.include_router(websocket_router.router)
+
+# Subscription management endpoints
+app.include_router(subscription_router.router)
+
+# Stripe webhook endpoints
+app.include_router(webhook_router.router)
 
 @app.get("/")
 def read_root():
