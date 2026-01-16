@@ -83,10 +83,10 @@ async def generate_birth_chart(
             "zodiac_type": zodiac_type,
             "houses_system_identifier": houses_system_identifier,
         },
-        "theme": "classic",
+        "theme": "dark",
         "language": "EN",
         "split_chart": False,
-        "transparent_background": False,
+        "transparent_background": True,
         "show_house_position_comparison": True,
     }
     
