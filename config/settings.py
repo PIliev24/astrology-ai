@@ -49,6 +49,9 @@ class Settings(BaseSettings):
         origins = [
             "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "https://aistrology.eu",
+            "https://aistrology.eu",
+            "https://www.aistrology.eu"
         ]
         if self.frontend_url and self.frontend_url not in origins:
             origins.append(self.frontend_url)
