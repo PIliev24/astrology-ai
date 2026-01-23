@@ -28,7 +28,7 @@ from services.subscription import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+router = APIRouter(prefix="/webhook", tags=["Webhooks"])
 load_dotenv()
 
 # Stripe webhook secret from environment
