@@ -134,6 +134,7 @@ def create_checkout_session(
             subscription_data={
                 "metadata": {"user_id": user_id} if user_id else {},
             },
+            allow_promotion_codes=True
         )
         
         logger.info(
