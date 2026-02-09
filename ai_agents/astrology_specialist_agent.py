@@ -226,10 +226,7 @@ Stay on astrology. Use provided chart data only -- don't guess. Guide users to c
 astrology_specialist = Agent(
     name="Astrology Specialist",
     instructions=ASTROLOGY_SPECIALIST_INSTRUCTIONS,
-    model="gpt-4.1-mini",
-    model_settings=ModelSettings(
-        parallel_tool_calls=True,
-    ),
+    model='gpt-5-mini',
     tools=[
         get_user_birth_chart,
         list_user_charts,
