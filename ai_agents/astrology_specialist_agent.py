@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Optional
 from pydantic import BaseModel, Field
-from agents import Agent, RunContextWrapper, function_tool
+from agents import Agent, ModelSettings, RunContextWrapper, function_tool
 
 from services.database import get_birth_chart_by_id, get_user_birth_charts, get_birth_data_by_chart_ids
 from services.compatibility import calculate_compatibility_score_from_data
@@ -77,7 +77,7 @@ async def get_user_birth_chart(
             
             # Extract minimal chart data (planetary positions only)
             result = extract_minimal_charts_data(charts)
-            result_json = json.dumps(result, indent=2, default=str)
+            result_json = json.dumps(result, default=str)
             
             # Check token usage and warn if approaching limit
             within_limit, token_count, message = default_monitor.check_limit(result_json)
@@ -100,7 +100,7 @@ async def get_user_birth_chart(
         
         # Extract minimal chart data (planetary positions only)
         result = extract_minimal_chart_data(chart)
-        result_json = json.dumps(result, indent=2, default=str)
+        result_json = json.dumps(result, default=str)
         
         # Check token usage and warn if approaching limit
         within_limit, token_count, message = default_monitor.check_limit(result_json)
@@ -143,7 +143,7 @@ async def list_user_charts(
             for chart in charts
         ]
         
-        return json.dumps({"charts": result}, indent=2, default=str)
+        return json.dumps({"charts": result}, default=str)
     
     except Exception as e:
         logger.error(f"Error listing charts: {str(e)}")
@@ -202,51 +202,34 @@ async def calculate_compatibility(
             subject2_data,
         )
         
-        return json.dumps(compatibility_data, indent=2, default=str)
+        return json.dumps(compatibility_data, default=str)
     
     except Exception as e:
         logger.error(f"Error calculating compatibility: {str(e)}")
         return json.dumps({"error": f"Failed to calculate compatibility: {str(e)}"})
 
 
-# Agent Instructions - Optimized for token efficiency
-ASTROLOGY_SPECIALIST_INSTRUCTIONS = """You are an expert astrologer specializing in natal chart interpretation and relationship compatibility.
+ASTROLOGY_SPECIALIST_INSTRUCTIONS = """You are a warm, conversational expert astrologer for natal chart interpretation and compatibility.
 
-## Your Role
-Interpret birth charts, explain planetary positions in signs and houses, analyze aspects, and provide compatibility insights. Use warm, accessible, conversational language that feels natural and native.
+## Style
+Be concise, direct, and friendly -- like chatting with a knowledgeable friend. Reference specific positions (e.g., "Sun in Leo, 5th house"). For compatibility, balance strengths and challenges.
 
-## Response Style
-- Keep responses concise and to the point - avoid unnecessary verbosity
-- Use natural, conversational language - write as you would speak to a friend
-- Be direct and clear - get to the point quickly
-- Use simple, everyday words when possible - avoid overly formal or academic language
-- Make responses feel personal and relatable
-
-## Tool Usage
-
-Charts: Use `get_user_birth_chart(chart_ids=["id"])` for single chart or `get_user_birth_chart(chart_ids=["id1", "id2"])` for multiple. If no IDs provided, returns most recent. Use `list_user_charts()` to help users find charts.
-
-Compatibility: IMPORTANT - When calculating compatibility, use ONLY `calculate_compatibility(chart_ids=["id1", "id2"])` for saved charts OR `calculate_compatibility(subject1_birth_data=..., subject2_birth_data=...)` for unsaved data. DO NOT call `get_user_birth_chart` before calculating compatibility - the compatibility tool handles fetching birth_data directly to reduce token usage.
-
-## Interpretation Guidelines
-- Reference specific positions (e.g., "Sun in Leo, 5th house")
-- Explain planet meanings and sign/house influences
-- Be specific but concise
-- For compatibility, balance strengths and challenges
+## Tools
+- Charts: `get_user_birth_chart(chart_ids=["id"])` for one, `get_user_birth_chart(chart_ids=["id1", "id2"])` for multiple. No IDs = most recent. Use `list_user_charts()` to help users find charts.
+- Compatibility: Use ONLY `calculate_compatibility(chart_ids=["id1", "id2"])` for saved charts OR `calculate_compatibility(subject1_birth_data=..., subject2_birth_data=...)` for unsaved data. Do NOT call get_user_birth_chart before compatibility -- the tool fetches data directly.
 
 ## Rules
-- Stay focused on astrology
-- Don't guess - say if unsure
-- Use provided chart data only
-- Guide users to create charts if needed
-- Keep responses brief and conversational"""
+Stay on astrology. Use provided chart data only -- don't guess. Guide users to create charts if needed."""
 
 
 # Initialize the agent
 astrology_specialist = Agent(
     name="Astrology Specialist",
     instructions=ASTROLOGY_SPECIALIST_INSTRUCTIONS,
-    model='gpt-5-mini',
+    model="gpt-4.1-mini",
+    model_settings=ModelSettings(
+        parallel_tool_calls=True,
+    ),
     tools=[
         get_user_birth_chart,
         list_user_charts,

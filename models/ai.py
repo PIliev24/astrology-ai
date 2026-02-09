@@ -48,6 +48,21 @@ class ChatMessageResponse(BaseModel):
     )
 
 
+class StreamDeltaResponse(BaseModel):
+    """Streaming text delta sent incrementally"""
+    type: Literal["stream_delta"] = "stream_delta"
+    content: str
+    conversation_id: Optional[UUID] = None
+
+
+class StreamEndResponse(BaseModel):
+    """End of stream signal with metadata"""
+    type: Literal["stream_end"] = "stream_end"
+    conversation_id: Optional[UUID] = None
+    tool_calls: Optional[List[ToolCallMetadata]] = None
+    chart_references: Optional[List[str]] = None
+
+
 class ConversationResponse(BaseModel):
     """Response model for conversation metadata"""
     

@@ -35,6 +35,8 @@ from models.ai import (
     ChatMessageResponse,
     ErrorResponse,
     ConnectionResponse,
+    StreamDeltaResponse,
+    StreamEndResponse,
     ToolCallMetadata,
 )
 from models.database import ChatConversationCreate, ChatMessageCreate, ChatConversationUpdate
@@ -359,10 +361,14 @@ async def websocket_chat(
                             if isinstance(event.data, ResponseTextDeltaEvent):
                                 delta = event.data.delta
                                 assistant_response_content += delta
-                                
-                                # Send incremental updates (optional - can be disabled for less frequent updates)
-                                # For now, we'll send the full response at the end
-                                pass
+
+                                # Send delta immediately to client
+                                await websocket.send_json(
+                                    StreamDeltaResponse(
+                                        content=delta,
+                                        conversation_id=current_conversation_id,
+                                    ).model_dump(mode="json")
+                                )
                         
                         # Track tool calls
                         elif event.type == "run_item_stream_event":
@@ -445,16 +451,14 @@ async def websocket_chat(
                         logger.error("Failed to increment message usage for user %s: %s", user_id, str(e))
                         # Don't fail the request if usage tracking fails
                     
-                    # Send final response
-                    response = ChatMessageResponse(
-                        type="message",
-                        role="assistant",
-                        content=final_output,
-                        conversation_id=current_conversation_id,
-                        tool_calls=tool_calls_metadata if tool_calls_metadata else None,
-                        chart_references=message_request.chart_references,
+                    # Send stream end signal
+                    await websocket.send_json(
+                        StreamEndResponse(
+                            conversation_id=current_conversation_id,
+                            tool_calls=tool_calls_metadata if tool_calls_metadata else None,
+                            chart_references=message_request.chart_references,
+                        ).model_dump(mode="json")
                     )
-                    await websocket.send_json(response.model_dump(mode='json'))
                 
                 except Exception as e:
                     logger.error("Error running agent: %s", str(e))
