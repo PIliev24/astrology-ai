@@ -3,6 +3,7 @@ Birth Chart Service
 Uses RapidAPI Hub - Astrologer for birth chart calculations
 """
 
+import asyncio
 import os
 import logging
 from typing import Dict, Any
@@ -33,6 +34,7 @@ async def generate_birth_chart(
     timezone: str,
     zodiac_type: str = "Tropical",
     houses_system_identifier: str = "P",
+    theme: str = "dark",
 ) -> Dict[str, Any]:
     """
     Generate birth chart data using RapidAPI Hub - Astrologer.
@@ -83,7 +85,7 @@ async def generate_birth_chart(
             "zodiac_type": zodiac_type,
             "houses_system_identifier": houses_system_identifier,
         },
-        "theme": "dark",
+        "theme": theme,
         "language": "EN",
         "split_chart": False,
         "transparent_background": True,
@@ -137,3 +139,53 @@ async def generate_birth_chart(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate birth chart: {str(e)}"
         )
+
+
+async def generate_birth_chart_both_themes(
+    name: str,
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+    city: str,
+    nation: str,
+    longitude: float,
+    latitude: float,
+    timezone: str,
+    zodiac_type: str = "Tropical",
+    houses_system_identifier: str = "P",
+) -> Dict[str, Any]:
+    """
+    Generate birth chart data for both dark and classic themes concurrently.
+
+    Uses the dark theme response as the base result and adds the classic SVG
+    as ``chart_classic`` alongside the existing ``chart`` key.
+
+    Returns:
+        Dictionary with chart_data, chart (dark SVG), and chart_classic (classic SVG).
+    """
+    call_args = (
+        name, year, month, day, hour, minute,
+        city, nation, longitude, latitude, timezone,
+        zodiac_type, houses_system_identifier,
+    )
+
+    dark_result, classic_result = await asyncio.gather(
+        generate_birth_chart(*call_args, theme="dark"),
+        generate_birth_chart(*call_args, theme="classic"),
+        return_exceptions=True,
+    )
+
+    # Dark theme is required — re-raise if it failed
+    if isinstance(dark_result, BaseException):
+        raise dark_result
+
+    # Classic theme is optional — degrade gracefully
+    if isinstance(classic_result, BaseException):
+        logger.warning("Classic theme generation failed, proceeding without it: %s", classic_result)
+        dark_result["chart_classic"] = ""
+    else:
+        dark_result["chart_classic"] = classic_result.get("chart", "")
+
+    return dark_result

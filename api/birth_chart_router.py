@@ -3,15 +3,15 @@ Birth Chart Router
 Handles birth chart creation, retrieval, and deletion endpoints
 """
 
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, Query, status
 from uuid import UUID
-from typing import List
+from typing import List, Literal
 
 from models.astrology import BirthChartCreateRequest, BirthChartResponse, BirthChartListItem
 from models.database import UserBirthChartCreate
 from services.date_parser import parse_birth_datetime
 from services.location_resolver import resolve_location
-from services.birth_chart import generate_birth_chart
+from services.birth_chart import generate_birth_chart_both_themes
 from services.database import (
     save_birth_chart,
     get_user_birth_charts,
@@ -56,8 +56,8 @@ async def create_birth_chart(
         # Resolve location
         location = await resolve_location(request.city, request.country)
         
-        # Generate birth chart using RapidAPI
-        chart_data = await generate_birth_chart(
+        # Generate birth chart using RapidAPI (both dark + classic themes)
+        chart_data = await generate_birth_chart_both_themes(
             name=request.name,
             year=parsed_date["year"],
             month=parsed_date["month"],
@@ -153,18 +153,27 @@ async def list_birth_charts(
 async def get_birth_chart(
     chart_id: UUID,
     user: dict = Depends(get_current_user),
+    theme: Literal["dark", "classic"] = Query(default="dark"),
 ):
     """
     Get a specific birth chart by ID.
+    Use ``?theme=classic`` to receive the light-themed SVG instead of dark.
     """
     try:
         chart = get_birth_chart_by_id(user["id"], str(chart_id))
-        
+
+        chart_data = {**chart.chart_data}
+
+        if theme == "classic" and chart_data.get("chart_classic"):
+            chart_data["chart"] = chart_data["chart_classic"]
+
+        chart_data.pop("chart_classic", None)
+
         return BirthChartResponse(
             id=chart.id,
             name=chart.name,
             birth_data=chart.birth_data,
-            chart_data=chart.chart_data,
+            chart_data=chart_data,
             created_at=chart.created_at,
         )
     
