@@ -1164,21 +1164,21 @@ def update_user_subscription(
     update_data: SubscriptionUpdate,
 ) -> Subscription:
     """
-    Update user's subscription (typically from Stripe webhook).
-    
+    Update user's subscription.
+
     Args:
         user_id: User ID (UUID string)
         update_data: Fields to update
-    
+
     Returns:
         Subscription: Updated subscription
-    
+
     Raises:
         HTTPException: If subscription not found or update fails
     """
     try:
         supabase = _create_supabase_client()
-        
+
         # Build update dict from non-None fields
         update_dict = {}
         if update_data.stripe_subscription_id is not None:
@@ -1191,37 +1191,41 @@ def update_user_subscription(
         if update_data.is_active is not None:
             update_dict["is_active"] = update_data.is_active
         if update_data.current_period_end is not None:
-            # Convert datetime to ISO format string for Supabase
             if isinstance(update_data.current_period_end, datetime):
                 update_dict["current_period_end"] = update_data.current_period_end.isoformat()
             else:
                 update_dict["current_period_end"] = update_data.current_period_end
         elif update_data.current_period_end is None:
             update_dict["current_period_end"] = None
-        
+        if update_data.message_credits is not None:
+            update_dict["message_credits"] = update_data.message_credits
+        if update_data.unlimited_until is not None:
+            if isinstance(update_data.unlimited_until, datetime):
+                update_dict["unlimited_until"] = update_data.unlimited_until.isoformat()
+            else:
+                update_dict["unlimited_until"] = update_data.unlimited_until
+
         if not update_dict:
-            # No fields to update, return existing subscription
             return get_user_subscription(user_id)
-        
-        # Always update the updated_at timestamp
+
         update_dict["updated_at"] = "now()"
-        
+
         response = (
             supabase.table("user_subscriptions")
             .update(update_dict)
             .eq("user_id", user_id)
             .execute()
         )
-        
+
         if not response.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Subscription not found"
             )
-        
+
         logger.info("Updated subscription for user %s", user_id)
         return Subscription(**response.data[0])
-    
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -1229,6 +1233,197 @@ def update_user_subscription(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update subscription: {str(exc)}"
+        ) from exc
+
+
+def add_message_credits(user_id: str, amount: int) -> Subscription:
+    """
+    Atomically add message credits to a user's subscription.
+    Credits stack with existing credits.
+
+    Args:
+        user_id: User ID (UUID string)
+        amount: Number of credits to add
+
+    Returns:
+        Subscription: Updated subscription
+    """
+    try:
+        supabase = _create_supabase_client()
+
+        # Fetch current subscription to get current credits
+        current = get_or_create_user_subscription(user_id)
+        new_credits = current.message_credits + amount
+
+        response = (
+            supabase.table("user_subscriptions")
+            .update({
+                "message_credits": new_credits,
+                "status": "credits" if new_credits > 0 else current.status,
+                "updated_at": "now()",
+            })
+            .eq("user_id", user_id)
+            .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription not found"
+            )
+
+        logger.info("Added %d credits for user %s (total: %d)", amount, user_id, new_credits)
+        return Subscription(**response.data[0])
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error adding credits for user %s: %s", user_id, str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add message credits: {str(exc)}"
+        ) from exc
+
+
+def deduct_message_credit(user_id: str) -> Subscription:
+    """
+    Atomically deduct 1 message credit from a user's subscription.
+    Only deducts if credits > 0.
+
+    Args:
+        user_id: User ID (UUID string)
+
+    Returns:
+        Subscription: Updated subscription
+    """
+    try:
+        supabase = _create_supabase_client()
+
+        current = get_or_create_user_subscription(user_id)
+
+        if current.message_credits <= 0:
+            logger.warning("Cannot deduct credit for user %s: no credits remaining", user_id)
+            return current
+
+        new_credits = current.message_credits - 1
+
+        # If credits drop to 0 and no unlimited pass, set status back to free
+        from services.usage_tracker import get_effective_plan
+
+        update_data = {
+            "message_credits": new_credits,
+            "updated_at": "now()",
+        }
+
+        response = (
+            supabase.table("user_subscriptions")
+            .update(update_data)
+            .eq("user_id", user_id)
+            .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription not found"
+            )
+
+        logger.debug("Deducted 1 credit for user %s (remaining: %d)", user_id, new_credits)
+        return Subscription(**response.data[0])
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error deducting credit for user %s: %s", user_id, str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to deduct message credit: {str(exc)}"
+        ) from exc
+
+
+def set_unlimited_until(user_id: str, until_dt: datetime) -> Subscription:
+    """
+    Set the unlimited pass expiry for a user.
+
+    Args:
+        user_id: User ID (UUID string)
+        until_dt: When unlimited access expires
+
+    Returns:
+        Subscription: Updated subscription
+    """
+    try:
+        supabase = _create_supabase_client()
+
+        from constants.limits import LIFETIME_EXPIRY
+        status_value = "lifetime" if until_dt >= LIFETIME_EXPIRY else "unlimited"
+
+        response = (
+            supabase.table("user_subscriptions")
+            .update({
+                "unlimited_until": until_dt.isoformat(),
+                "status": status_value,
+                "updated_at": "now()",
+            })
+            .eq("user_id", user_id)
+            .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription not found"
+            )
+
+        logger.info("Set unlimited_until=%s for user %s", until_dt.isoformat(), user_id)
+        return Subscription(**response.data[0])
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error setting unlimited_until for user %s: %s", user_id, str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to set unlimited access: {str(exc)}"
+        ) from exc
+
+
+def extend_unlimited_until(user_id: str, duration: 'timedelta') -> Subscription:
+    """
+    Extend unlimited pass from max(current unlimited_until, now) + duration.
+
+    Args:
+        user_id: User ID (UUID string)
+        duration: Duration to extend by
+
+    Returns:
+        Subscription: Updated subscription
+    """
+    from datetime import timedelta as td
+
+    try:
+        current = get_or_create_user_subscription(user_id)
+        now = datetime.now(timezone.utc)
+
+        # Start from max(current unlimited_until, now)
+        base = now
+        if current.unlimited_until:
+            current_until = current.unlimited_until
+            if current_until.tzinfo is None:
+                current_until = current_until.replace(tzinfo=timezone.utc)
+            if current_until > now:
+                base = current_until
+
+        new_until = base + duration
+        return set_unlimited_until(user_id, new_until)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error extending unlimited for user %s: %s", user_id, str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to extend unlimited access: {str(exc)}"
         ) from exc
 
 

@@ -43,8 +43,10 @@ from models.database import ChatConversationCreate, ChatMessageCreate, ChatConve
 from models.subscription import PlanType
 from services.usage_tracker import (
     can_send_message,
-    get_remaining_messages,
-    get_messages_until_reset,
+    get_effective_plan,
+    get_remaining_free_messages,
+    get_time_until_reset,
+    is_paid_plan,
     should_reset_daily_usage,
 )
 
@@ -179,43 +181,32 @@ async def websocket_chat(
                 
                 # Check subscription and usage limits
                 try:
-                    # Get user's subscription
+                    # Get user's subscription and determine effective plan
                     subscription = get_or_create_user_subscription(user_id)
-                    plan_type = PlanType(subscription.status)
-                    
-                    # Get user's current usage
+                    plan_type = get_effective_plan(subscription)
+
+                    # Get user's current usage (for free tier tracking)
                     usage = get_user_usage(user_id)
-                    
-                    # Reset usage if 24 hours have passed
+
+                    # Reset free tier usage window if elapsed
                     if should_reset_daily_usage(usage):
                         usage = reset_user_usage(user_id)
-                    
+
                     # Check if user can send message
-                    if not can_send_message(usage, plan_type):
-                        remaining = get_remaining_messages(usage, plan_type)
-                        time_until_reset = get_messages_until_reset(usage)
+                    if not can_send_message(subscription, usage):
+                        time_until_reset = get_time_until_reset(usage)
                         hours_until_reset = int(time_until_reset.total_seconds() / 3600)
-                        
+
                         error_response = ErrorResponse(
                             type="error",
-                            error="message_limit_exceeded",
-                            message=f"Daily message limit reached for {plan_type.value} plan. Limit: {plan_type.value}. "
-                                   f"Reset in {hours_until_reset} hours. Consider upgrading to Pro for unlimited messages.",
+                            error="purchase_required",
+                            message=f"Message limit reached. Free tier allows 1 message per 48 hours. "
+                                   f"Reset in {hours_until_reset} hours. Purchase a message pack or unlimited pass for more access.",
                         )
                         await websocket.send_json(error_response.model_dump(mode='json'))
-                        logger.info(f"User {user_id} exceeded message limit on {plan_type.value} plan")
+                        logger.info("User %s exceeded free message limit", user_id)
                         continue
-                
-                except ValueError as e:
-                    # Invalid plan type
-                    logger.error(f"Invalid plan type for user {user_id}: {str(e)}")
-                    error_response = ErrorResponse(
-                        type="error",
-                        error="invalid_subscription",
-                        message="Subscription status is invalid. Please contact support.",
-                    )
-                    await websocket.send_json(error_response.model_dump(mode='json'))
-                    continue
+
                 except HTTPException:
                     raise
                 except Exception as e:
@@ -301,8 +292,8 @@ async def websocket_chat(
                         logger.warning("Failed to link conversation to charts: %s", str(e))
                         # Don't fail the request if linking fails
                 
-                # Save user message to database only for Basic and Pro plans
-                should_save_messages = plan_type in [PlanType.BASIC, PlanType.PRO]
+                # Save messages for all paid plans (credits, unlimited, lifetime)
+                should_save_messages = is_paid_plan(plan_type)
                 
                 if should_save_messages:
                     save_message(
@@ -423,7 +414,7 @@ async def websocket_chat(
                     elif message:
                         logger.info("Response token usage warning: %s", message)
                     
-                    # Save assistant message to database only for Basic and Pro plans
+                    # Save assistant message to database for paid plans
                     if should_save_messages:
                         save_message(
                             ChatMessageCreate(
@@ -443,13 +434,18 @@ async def websocket_chat(
                             ),
                         )
                     
-                    # Increment message usage count after successful response
+                    # Deduct usage after successful response
                     try:
-                        increment_user_message_count(user_id)
-                        logger.debug("Incremented message count for user %s", user_id)
+                        if plan_type == PlanType.CREDITS:
+                            from services.database import deduct_message_credit
+                            deduct_message_credit(user_id)
+                            logger.debug("Deducted 1 credit for user %s", user_id)
+                        elif plan_type == PlanType.FREE:
+                            increment_user_message_count(user_id)
+                            logger.debug("Incremented free message count for user %s", user_id)
+                        # LIFETIME and UNLIMITED: no deduction needed
                     except Exception as e:
-                        logger.error("Failed to increment message usage for user %s: %s", user_id, str(e))
-                        # Don't fail the request if usage tracking fails
+                        logger.error("Failed to track usage for user %s: %s", user_id, str(e))
                     
                     # Send stream end signal
                     await websocket.send_json(

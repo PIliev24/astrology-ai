@@ -1,6 +1,6 @@
 """
 Subscription models for Stripe integration.
-All subscription data is sourced from Stripe with local database caching.
+Usage-based purchase model: message credits, time-limited passes, and lifetime access.
 """
 
 from datetime import datetime
@@ -12,21 +12,21 @@ from pydantic import BaseModel, Field
 
 
 class PlanType(str, Enum):
-    """Subscription plan types."""
+    """Effective plan types based on user's current state."""
 
     FREE = "free"
-    BASIC = "basic"
-    PRO = "pro"
+    CREDITS = "credits"
+    UNLIMITED = "unlimited"
+    LIFETIME = "lifetime"
 
 
-class SubscriptionStatus(str, Enum):
-    """Subscription billing status from Stripe."""
+class ProductType(str, Enum):
+    """Purchasable product types."""
 
-    ACTIVE = "active"
-    CANCELED = "canceled"
-    PAST_DUE = "past_due"
-    INCOMPLETE = "incomplete"
-    INCOMPLETE_EXPIRED = "incomplete_expired"
+    PACK_10 = "pack_10"
+    DAY_1 = "day_1"
+    WEEK_1 = "week_1"
+    LIFETIME = "lifetime"
 
 
 class SubscriptionBase(BaseModel):
@@ -38,6 +38,8 @@ class SubscriptionBase(BaseModel):
     status: PlanType = PlanType.FREE
     is_active: bool = True
     current_period_end: Optional[datetime] = None
+    message_credits: int = 0
+    unlimited_until: Optional[datetime] = None
 
 
 class SubscriptionCreate(SubscriptionBase):
@@ -47,13 +49,15 @@ class SubscriptionCreate(SubscriptionBase):
 
 
 class SubscriptionUpdate(BaseModel):
-    """Model for updating subscription from Stripe webhook."""
+    """Model for updating subscription from webhook or purchase."""
 
     stripe_subscription_id: Optional[str] = None
     stripe_price_id: Optional[str] = None
     status: Optional[PlanType] = None
     is_active: Optional[bool] = None
     current_period_end: Optional[datetime] = None
+    message_credits: Optional[int] = None
+    unlimited_until: Optional[datetime] = None
 
 
 class Subscription(SubscriptionBase):
@@ -75,8 +79,8 @@ class SubscriptionResponse(BaseModel):
     plan: PlanType
     is_active: bool
     stripe_customer_id: str
-    stripe_subscription_id: Optional[str] = None
-    current_period_end: Optional[datetime] = None
+    message_credits: int = 0
+    unlimited_until: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -87,8 +91,8 @@ class SubscriptionResponse(BaseModel):
 class UsageBase(BaseModel):
     """Base usage tracking model."""
 
-    message_count: int = Field(ge=0, description="Number of messages sent in current 24h window")
-    last_reset_at: datetime = Field(description="When the 24h window started")
+    message_count: int = Field(ge=0, description="Number of messages sent in current window")
+    last_reset_at: datetime = Field(description="When the usage window started")
 
 
 class UsageCreate(UsageBase):
@@ -112,12 +116,12 @@ class Usage(UsageBase):
 class UsageResponse(BaseModel):
     """Usage response for API endpoints."""
 
-    message_count: int = Field(description="Messages used in current 24h window")
-    message_limit: Optional[int] = Field(description="Total allowed messages (based on plan, None for unlimited)")
-    messages_remaining: Optional[int] = Field(description="Messages remaining in 24h window (None for unlimited)")
-    last_reset_at: datetime = Field(description="When the current window started")
-    reset_at: datetime = Field(description="When the window will reset")
-    plan: PlanType = Field(description="Current subscription plan")
+    effective_plan: PlanType = Field(description="Current effective plan type")
+    message_credits: int = Field(description="Remaining message credits")
+    unlimited_until: Optional[datetime] = Field(description="When unlimited access expires (None if not active)")
+    free_messages_used: int = Field(description="Free messages used in current window")
+    free_messages_remaining: Optional[int] = Field(description="Free messages remaining (None if paid)")
+    window_reset_at: Optional[datetime] = Field(description="When the free usage window resets")
 
     class Config:
         from_attributes = True
@@ -147,27 +151,8 @@ class CheckoutSessionResponse(BaseModel):
     url: str = Field(description="URL to redirect user to Stripe Checkout")
 
 
-class CancelSubscriptionRequest(BaseModel):
-    """Request to cancel subscription."""
-
-    immediate: bool = Field(
-        default=False,
-        description="If true, cancel immediately. If false, cancel at end of billing period",
-    )
-
-
 class WebhookEventData(BaseModel):
     """Generic webhook event data structure."""
 
     type: str = Field(description="Event type (e.g., 'checkout.session.completed')")
     data: dict = Field(description="Event data from Stripe")
-
-
-class StripePriceMetadata(BaseModel):
-    """Metadata stored in Stripe price object."""
-
-    plan_name: str = Field(description="Plan name (free, basic, pro)")
-    message_limit: Optional[int] = Field(
-        default=None, description="Daily message limit (None for unlimited)"
-    )
-

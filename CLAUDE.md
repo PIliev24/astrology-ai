@@ -35,7 +35,7 @@ No test suite or linter is configured yet.
 - `models/` — Pydantic models for API requests/responses and database entities
 - `config/settings.py` — Pydantic Settings with `@lru_cache`. Validates all env vars at startup
 - `middleware/auth.py` — JWT authentication via Supabase
-- `constants/` — Subscription plan limits and message templates
+- `constants/` — Usage limits and purchase configuration
 - `migrations/` — SQL migration files (run manually via Supabase dashboard/CLI)
 
 **Key patterns:**
@@ -43,11 +43,11 @@ No test suite or linter is configured yet.
 - `AppException` hierarchy — Domain exceptions (`ChartNotFoundError`, `MessageLimitExceededError`, etc.) caught by global handlers in `core/error_handlers.py`
 - Dependency injection via FastAPI's `Depends()` for auth and clients
 - WebSocket endpoint (`/ws/chat`) for streaming AI responses
-- Rolling 24-hour usage window for message limits (FREE: 1/day, BASIC: 3/day, PRO: unlimited)
+- Usage-based purchases: message credits (10-pack), time-limited unlimited passes (1 day, 1 week), and lifetime access. Free tier: 1 msg/48h
 
 ## Environment
 
-Requires `.env` file (see `.env.example`). Key variables: `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `RAPIDAPI_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_BASIC`, `STRIPE_PRICE_ID_PRO`. The `SUPABASE_SECRET_KEY` is the service role key that bypasses RLS.
+Requires `.env` file (see `.env.example`). Key variables: `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `RAPIDAPI_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_PACK_10`, `STRIPE_PRICE_ID_DAY_1`, `STRIPE_PRICE_ID_WEEK_1`, `STRIPE_PRICE_ID_LIFETIME`. The `SUPABASE_SECRET_KEY` is the service role key that bypasses RLS.
 
 ## Tech Stack
 

@@ -33,8 +33,10 @@ class Settings(BaseSettings):
     # Stripe Configuration
     stripe_secret_key: str
     stripe_webhook_secret: str
-    stripe_price_id_basic: str
-    stripe_price_id_pro: str
+    stripe_price_id_pack_10: str
+    stripe_price_id_day_1: str
+    stripe_price_id_week_1: str
+    stripe_price_id_lifetime: str
 
     # Application Configuration
     frontend_url: str = "http://localhost:3000"

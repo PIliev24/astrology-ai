@@ -163,7 +163,7 @@ class SubscriptionService:
 
     def update(self, user_id: str, update_data: SubscriptionUpdate) -> Subscription:
         """
-        Update subscription (typically from Stripe webhook).
+        Update subscription.
 
         Args:
             user_id: User ID
@@ -191,6 +191,13 @@ class SubscriptionService:
                     update_dict["current_period_end"] = update_data.current_period_end
             elif update_data.current_period_end is None:
                 update_dict["current_period_end"] = None
+            if update_data.message_credits is not None:
+                update_dict["message_credits"] = update_data.message_credits
+            if update_data.unlimited_until is not None:
+                if isinstance(update_data.unlimited_until, datetime):
+                    update_dict["unlimited_until"] = update_data.unlimited_until.isoformat()
+                else:
+                    update_dict["unlimited_until"] = update_data.unlimited_until
 
             if not update_dict:
                 return self.get(user_id)

@@ -1,201 +1,111 @@
 """
-Usage tracking service for subscription-based message limits.
-Handles rolling 24-hour window message counting and limit enforcement.
+Usage tracking service for usage-based purchase model.
+Handles credit-based, time-pass-based, and free tier message access.
 """
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from models.subscription import PlanType, Usage
+from constants.limits import FREE_MESSAGE_LIMIT, FREE_WINDOW_HOURS
+from models.subscription import PlanType, Subscription, Usage
 
 
-# Plan message limits (daily rolling 24h window)
-PLAN_LIMITS = {
-    PlanType.FREE: 1,
-    PlanType.BASIC: 3,
-    PlanType.PRO: None,  # Unlimited
-}
-
-
-def get_plan_message_limit(plan_type: PlanType) -> Optional[int]:
+def get_effective_plan(subscription: Subscription) -> PlanType:
     """
-    Get the daily message limit for a subscription plan.
-    
-    Args:
-        plan_type: The subscription plan type
-    
-    Returns:
-        Message limit (None for unlimited)
-    """
-    return PLAN_LIMITS.get(plan_type)
+    Determine the user's effective plan based on their subscription state.
 
-
-def is_message_limit_exceeded(usage: Usage, plan_type: PlanType) -> bool:
+    Priority: lifetime > active unlimited pass > credits > free
     """
-    Check if user has exceeded their daily message limit.
-    Uses rolling 24-hour window from usage.last_reset_at.
-    
-    Args:
-        usage: User's current usage record
-        plan_type: User's subscription plan type
-    
-    Returns:
-        True if limit is exceeded, False otherwise
-    """
-    limit = get_plan_message_limit(plan_type)
-    
-    # Pro plan has unlimited messages
-    if limit is None:
-        return False
-    
-    # Check if 24 hours have passed since last reset
-    if _should_reset_usage(usage.last_reset_at):
-        return False
-    
-    # Check if current count exceeds limit
-    return usage.message_count >= limit
-
-
-def can_send_message(usage: Usage, plan_type: PlanType) -> bool:
-    """
-    Check if user is allowed to send another message.
-    
-    Args:
-        usage: User's current usage record
-        plan_type: User's subscription plan type
-    
-    Returns:
-        True if user can send a message, False otherwise
-    """
-    return not is_message_limit_exceeded(usage, plan_type)
-
-
-def get_remaining_messages(usage: Usage, plan_type: PlanType) -> int:
-    """
-    Get the number of remaining messages for today.
-    
-    Args:
-        usage: User's current usage record
-        plan_type: User's subscription plan type
-    
-    Returns:
-        Number of remaining messages (negative if over limit)
-    """
-    limit = get_plan_message_limit(plan_type)
-    
-    # Pro plan has unlimited messages
-    if limit is None:
-        return 999999  # Return large number for UI display
-    
-    # Check if 24 hours have passed (would reset the count)
-    if _should_reset_usage(usage.last_reset_at):
-        return limit
-    
-    return max(0, limit - usage.message_count)
-
-
-def get_messages_until_reset(usage: Usage) -> timedelta:
-    """
-    Get the time until the rolling 24-hour window resets.
-    
-    Args:
-        usage: User's current usage record
-    
-    Returns:
-        Timedelta until reset (0 if already reset)
-    """
-    if usage.last_reset_at is None:
-        return timedelta(0)
-    
-    # Ensure last_reset_at is timezone-aware
-    last_reset = usage.last_reset_at
-    if last_reset.tzinfo is None:
-        last_reset = last_reset.replace(tzinfo=timezone.utc)
-    
-    reset_time = last_reset + timedelta(hours=24)
     now = datetime.now(timezone.utc)
-    
-    time_until_reset = reset_time - now
-    
-    # Return 0 if already past reset time
-    if time_until_reset.total_seconds() <= 0:
-        return timedelta(0)
-   
-    return time_until_reset
+
+    if subscription.unlimited_until:
+        until = subscription.unlimited_until
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+
+        if until > now:
+            # Far-future date means lifetime
+            if until.year >= 2099:
+                return PlanType.LIFETIME
+            return PlanType.UNLIMITED
+
+    if subscription.message_credits > 0:
+        return PlanType.CREDITS
+
+    return PlanType.FREE
+
+
+def can_send_message(subscription: Subscription, usage: Usage) -> bool:
+    """
+    Check if user is allowed to send a message.
+
+    1. unlimited_until in the future -> YES
+    2. message_credits > 0 -> YES (credit deducted after message)
+    3. Free tier: 1 msg per 48h rolling window
+    4. Otherwise -> NO
+    """
+    plan = get_effective_plan(subscription)
+
+    if plan in (PlanType.LIFETIME, PlanType.UNLIMITED):
+        return True
+
+    if plan == PlanType.CREDITS:
+        return True
+
+    # Free tier: check rolling window
+    return _free_tier_can_send(usage)
+
+
+def _free_tier_can_send(usage: Usage) -> bool:
+    """Check if free tier user can send within their rolling window."""
+    if _should_reset_usage(usage.last_reset_at):
+        return True
+    return usage.message_count < FREE_MESSAGE_LIMIT
 
 
 def should_reset_daily_usage(usage: Usage) -> bool:
-    """
-    Check if the user's daily usage should be reset.
-    Rolling 24-hour window from last_reset_at.
-    
-    Args:
-        usage: User's current usage record
-    
-    Returns:
-        True if 24 hours have passed, False otherwise
-    """
+    """Check if the user's free tier usage window should be reset."""
     return _should_reset_usage(usage.last_reset_at)
 
 
+def get_remaining_free_messages(usage: Usage) -> int:
+    """Get remaining free messages in current window."""
+    if _should_reset_usage(usage.last_reset_at):
+        return FREE_MESSAGE_LIMIT
+    return max(0, FREE_MESSAGE_LIMIT - usage.message_count)
+
+
+def get_time_until_reset(usage: Usage) -> timedelta:
+    """Get time until the free tier rolling window resets."""
+    if usage.last_reset_at is None:
+        return timedelta(0)
+
+    last_reset = usage.last_reset_at
+    if last_reset.tzinfo is None:
+        last_reset = last_reset.replace(tzinfo=timezone.utc)
+
+    reset_time = last_reset + timedelta(hours=FREE_WINDOW_HOURS)
+    now = datetime.now(timezone.utc)
+    remaining = reset_time - now
+
+    if remaining.total_seconds() <= 0:
+        return timedelta(0)
+    return remaining
+
+
+def is_paid_plan(plan: PlanType) -> bool:
+    """Check if a plan type is a paid plan (for chat history saving)."""
+    return plan in (PlanType.CREDITS, PlanType.UNLIMITED, PlanType.LIFETIME)
+
+
 def _should_reset_usage(last_reset_at: Optional[datetime]) -> bool:
-    """
-    Internal helper to check if 24 hours have passed since last reset.
-    
-    Args:
-        last_reset_at: Timestamp of last reset
-    
-    Returns:
-        True if 24 hours have passed, False otherwise
-    """
+    """Check if the free tier window has elapsed."""
     if last_reset_at is None:
         return True
-    
+
     now = datetime.now(timezone.utc)
-    
-    # Ensure last_reset_at is timezone-aware
+
     if last_reset_at.tzinfo is None:
         last_reset_at = last_reset_at.replace(tzinfo=timezone.utc)
-    
-    time_elapsed = now - last_reset_at
-    return time_elapsed >= timedelta(hours=24)
 
-
-def calculate_usage_stats(usage: Usage, plan_type: PlanType) -> dict:
-    """
-    Calculate comprehensive usage statistics for a user.
-    
-    Args:
-        usage: User's current usage record
-        plan_type: User's subscription plan type
-    
-    Returns:
-        Dictionary with usage statistics including:
-        - message_count: Current messages used today
-        - limit: Daily limit (None for unlimited)
-        - remaining: Messages left (None for unlimited)
-        - percent_used: Percentage of limit used (0-100, None for unlimited)
-        - should_reset: Whether the window has passed 24 hours
-        - time_until_reset: Timedelta until window resets
-    """
-    limit = get_plan_message_limit(plan_type)
-    should_reset = should_reset_daily_usage(usage)
-    
-    current_count = 0 if should_reset else usage.message_count
-    
-    remaining = None
-    percent_used = None
-    
-    if limit is not None:
-        remaining = max(0, limit - current_count)
-        percent_used = int((current_count / limit) * 100) if limit > 0 else 0
-    
-    return {
-        "message_count": current_count,
-        "limit": limit,
-        "remaining": remaining,
-        "percent_used": percent_used,
-        "should_reset": should_reset,
-        "time_until_reset": get_messages_until_reset(usage) if not should_reset else timedelta(0),
-    }
-
+    return (now - last_reset_at) >= timedelta(hours=FREE_WINDOW_HOURS)

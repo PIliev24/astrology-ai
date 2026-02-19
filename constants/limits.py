@@ -1,48 +1,24 @@
 """
-Plan limits and rate restrictions.
+Usage limits and purchase configuration.
 
-Defines message limits and other quotas for different subscription tiers.
+Defines message limits for free tier and purchase-related constants.
 """
 
-from typing import Optional
+from datetime import datetime, timedelta, timezone
 
-# Import will be updated when models are refactored
-# For now, use string keys to avoid circular imports
-PLAN_MESSAGE_LIMITS: dict[str, Optional[int]] = {
-    "FREE": 1,
-    "BASIC": 3,
-    "PRO": None,  # Unlimited
-}
+# Free tier limits
+FREE_MESSAGE_LIMIT = 1
+FREE_WINDOW_HOURS = 48
 
-# Time window for rolling usage (24 hours in seconds)
-USAGE_WINDOW_SECONDS = 24 * 60 * 60
+# Credit amounts per product
+CREDIT_AMOUNTS = {"pack_10": 10}
+
+# Pass durations per product
+PASS_DURATIONS = {"day_1": timedelta(days=1), "week_1": timedelta(weeks=1)}
+
+# Lifetime expiry sentinel
+LIFETIME_EXPIRY = datetime(2099, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
 # WebSocket limits
 MAX_MESSAGE_LENGTH = 10000  # Characters
 MAX_CONTEXT_TOKENS = 8000
-
-
-def get_message_limit(plan_type: str) -> Optional[int]:
-    """
-    Get message limit for a plan type.
-
-    Args:
-        plan_type: The subscription plan type (FREE, BASIC, PRO)
-
-    Returns:
-        Message limit (int) or None for unlimited
-    """
-    return PLAN_MESSAGE_LIMITS.get(plan_type.upper())
-
-
-def is_unlimited(plan_type: str) -> bool:
-    """
-    Check if a plan has unlimited messages.
-
-    Args:
-        plan_type: The subscription plan type
-
-    Returns:
-        True if the plan has no message limit
-    """
-    return get_message_limit(plan_type) is None
