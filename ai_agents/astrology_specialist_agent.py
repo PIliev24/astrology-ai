@@ -5,11 +5,13 @@ Single comprehensive agent for birth chart interpretation, analysis, and compati
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
 from agents import Agent, ModelSettings, RunContextWrapper, function_tool
 
 from services.database import get_birth_chart_by_id, get_user_birth_charts, get_birth_data_by_chart_ids
+from services.birth_chart import generate_birth_chart
 from services.compatibility import calculate_compatibility_score_from_data
 from utils.chart_data_extractor import extract_minimal_chart_data, extract_minimal_charts_data
 from utils.token_monitor import default_monitor
@@ -209,14 +211,141 @@ async def calculate_compatibility(
         return json.dumps({"error": f"Failed to calculate compatibility: {str(e)}"})
 
 
-ASTROLOGY_SPECIALIST_INSTRUCTIONS = """You are a warm, conversational expert astrologer for natal chart interpretation and compatibility.
+# Planets relevant for transits (no Asc/MC/Desc/IC — those are location-dependent)
+TRANSIT_PLANETS = [
+    "sun", "moon", "mercury", "venus", "mars",
+    "jupiter", "saturn", "uranus", "neptune", "pluto",
+]
+
+
+@function_tool
+async def get_current_transits(
+    ctx: RunContextWrapper[AgentContext],
+    chart_id: Optional[str] = None,
+) -> str:
+    """
+    Get current planetary transit positions (real-time).
+
+    Use this tool when users ask about current transits, what planets are doing now,
+    or how current planetary positions affect their natal chart.
+
+    Args:
+        ctx: Agent context containing user_id
+        chart_id: Optional chart ID — if provided, also returns the user's natal planets for comparison
+
+    Returns:
+        JSON with transit_planets (current positions) and optionally natal_planets for transit-to-natal analysis
+    """
+    try:
+        now = datetime.now(timezone.utc)
+
+        # Generate a chart for the current moment using Greenwich as reference
+        # Planetary zodiacal positions (sign + degree) are the same worldwide
+        transit_data = await generate_birth_chart(
+            name="Current Transits",
+            year=now.year,
+            month=now.month,
+            day=now.day,
+            hour=now.hour,
+            minute=now.minute,
+            city="Greenwich",
+            nation="GB",
+            longitude=-0.0005,
+            latitude=51.4769,
+            timezone="Europe/London",
+        )
+
+        # Extract transit planet positions
+        chart_data = transit_data
+        if "chart_data" in chart_data and isinstance(chart_data["chart_data"], dict):
+            chart_data = chart_data["chart_data"]
+
+        subject = chart_data.get("subject", {})
+        transit_planets = {}
+
+        for planet_key in TRANSIT_PLANETS:
+            planet_data = subject.get(planet_key)
+            if planet_data and isinstance(planet_data, dict):
+                planet_info = {
+                    "name": planet_data.get("name"),
+                    "sign": planet_data.get("sign"),
+                    "position": planet_data.get("abs_pos"),
+                }
+                # Include retrograde status if available
+                if "retrograde" in planet_data:
+                    planet_info["retrograde"] = planet_data["retrograde"]
+                transit_planets[planet_key] = planet_info
+
+        result = {
+            "timestamp": now.isoformat(),
+            "transit_planets": transit_planets,
+        }
+
+        # If chart_id provided, also fetch natal chart for comparison
+        if chart_id and ctx.context and ctx.context.user_id:
+            try:
+                natal_chart = get_birth_chart_by_id(ctx.context.user_id, chart_id)
+                natal_data = extract_minimal_chart_data(natal_chart)
+                result["natal_chart_name"] = natal_data.get("name")
+                result["natal_planets"] = natal_data.get("planets", {})
+            except Exception as e:
+                logger.warning(f"Could not fetch natal chart {chart_id} for transit comparison: {e}")
+                result["natal_chart_error"] = f"Could not fetch natal chart: {str(e)}"
+
+        result_json = json.dumps(result, default=str)
+
+        within_limit, token_count, message = default_monitor.check_limit(result_json)
+        if not within_limit:
+            logger.warning(f"Token limit exceeded in get_current_transits: {message}")
+            result_json = default_monitor.truncate_content(result_json, default_monitor.limit - 10000)
+
+        return result_json
+
+    except Exception as e:
+        logger.error(f"Error fetching current transits: {str(e)}")
+        return json.dumps({"error": f"Failed to fetch current transits: {str(e)}"})
+
+
+ASTROLOGY_SPECIALIST_INSTRUCTIONS = """You are a warm, conversational expert astrologer for natal chart interpretation, compatibility, and transit analysis.
 
 ## Style
 Be concise, direct, and friendly -- like chatting with a knowledgeable friend. Reference specific positions (e.g., "Sun in Leo, 5th house"). For compatibility, balance strengths and challenges.
 
+## Language
+- ALWAYS reply in the exact same language the user writes in.
+- CRITICAL: Bulgarian and Russian are DIFFERENT languages. If the user writes in Bulgarian, respond in Bulgarian — NEVER in Russian. Pay close attention to the script and vocabulary differences.
+- If you are unsure of the language, default to matching the user's message character by character.
+
+## Bulgarian Astrology Terminology
+When responding in Bulgarian, you MUST use these correct astrology terms:
+- Houses → Домове (NEVER use "къщи")
+- Ascendant → Асцендент
+- Descendant → Десцендент
+- Midheaven (MC) → Среда на небето (MC)
+- IC → Дъно на небето (IC)
+- Sun sign / Moon sign → Слънчев знак / Лунен знак
+- Rising sign → Възходящ знак
+- Transit → Транзит
+- Natal chart → Натална карта
+- Synastry → Синастрия
+- Aspects: Конюнкция, Опозиция, Тригон, Квадратура, Секстил
+- Retrograde → Ретрограден
+- Cusp → Връх (на дом)
+- Signs: Овен, Телец, Близнаци, Рак, Лъв, Дева, Везни, Скорпион, Стрелец, Козирог, Водолей, Риби
+- Planets: Слънце, Луна, Меркурий, Венера, Марс, Юпитер, Сатурн, Уран, Нептун, Плутон
+
 ## Tools
 - Charts: `get_user_birth_chart(chart_ids=["id"])` for one, `get_user_birth_chart(chart_ids=["id1", "id2"])` for multiple. No IDs = most recent. Use `list_user_charts()` to help users find charts.
 - Compatibility: Use ONLY `calculate_compatibility(chart_ids=["id1", "id2"])` for saved charts OR `calculate_compatibility(subject1_birth_data=..., subject2_birth_data=...)` for unsaved data. Do NOT call get_user_birth_chart before compatibility -- the tool fetches data directly.
+- Transits: Use `get_current_transits()` to get real-time planetary positions. Use `get_current_transits(chart_id="id")` to also include the user's natal chart for personalized transit readings. When the user asks about current transits relative to their chart, ALWAYS pass their chart_id so you can compare transit positions to natal positions.
+
+## Transit Interpretation Guide
+When interpreting transits:
+- Compare transit planet positions to natal planet positions and identify aspects (conjunctions within ~8°, oppositions ~180°, trines ~120°, squares ~90°, sextiles ~60° — all with standard orbs).
+- Note which natal house each transit planet is passing through.
+- Highlight major outer planet transits: Saturn return (~29 years), Jupiter return (~12 years), Uranus opposition (~42 years).
+- If a planet is retrograde, emphasize its introspective/revisionary energy for that domain.
+- Prioritize slow-moving planet transits (Pluto, Neptune, Uranus, Saturn, Jupiter) as they have longer-lasting effects.
 
 ## Rules
 Stay on astrology. Use provided chart data only -- don't guess. Guide users to create charts if needed."""
@@ -231,6 +360,7 @@ astrology_specialist = Agent(
         get_user_birth_chart,
         list_user_charts,
         calculate_compatibility,
+        get_current_transits,
     ],
 )
 
